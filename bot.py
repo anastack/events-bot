@@ -163,14 +163,13 @@ def _preview_text(d: dict) -> str:
 
 # ── keyboards ─────────────────────────────────────────────────────────────────
 
-def kb_main_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("📅 Мероприятия"), KeyboardButton("➕ Добавить")],
-            [KeyboardButton("🔧 Управление"),  KeyboardButton("ℹ️ Помощь")],
-        ],
-        resize_keyboard=True,
-    )
+def kb_main_menu(admin: bool = False) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton("📅 Мероприятия"), KeyboardButton("➕ Добавить")]]
+    if admin:
+        rows.append([KeyboardButton("🔧 Управление"), KeyboardButton("ℹ️ Помощь")])
+    else:
+        rows.append([KeyboardButton("ℹ️ Помощь")])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
 def kb_confirm(is_admin_user: bool = True) -> InlineKeyboardMarkup:
@@ -577,7 +576,7 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text("❌ Отменено.", reply_markup=kb_main_menu())
+    await update.message.reply_text("❌ Отменено.", reply_markup=kb_main_menu(is_admin(update.effective_user.id)))
     return ConversationHandler.END
 
 
@@ -754,6 +753,7 @@ async def event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ── other commands ────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    admin = is_admin(update.effective_user.id)
     await update.message.reply_text(
         "👋 <b>Привет!</b> Я публикую анонсы мероприятий в канал.\n\n"
         "Используй кнопки меню внизу или команды:\n"
@@ -761,20 +761,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/add — добавить мероприятие\n"
         "/cancel — отменить текущее действие",
         parse_mode="HTML",
-        reply_markup=kb_main_menu(),
+        reply_markup=kb_main_menu(admin),
     )
 
 
 async def cmd_help(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
+    admin = is_admin(update.effective_user.id)
+    text = (
         "ℹ️ <b>Помощь</b>\n\n"
         "📅 <b>Мероприятия</b> — посмотреть ближайшие события, записаться на них\n"
         "➕ <b>Добавить</b> — предложить новое мероприятие\n"
-        "🔧 <b>Управление</b> — редактирование и удаление (только для админов)\n\n"
-        "При добавлении мероприятие сначала проходит проверку у администратора.",
-        parse_mode="HTML",
-        reply_markup=kb_main_menu(),
     )
+    if admin:
+        text += "🔧 <b>Управление</b> — редактирование и удаление\n\n"
+    else:
+        text += "\nПри добавлении мероприятие сначала проходит проверку у администратора."
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb_main_menu(admin))
 
 
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1021,7 +1023,7 @@ async def _back_to_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("edit_event_id", None)
     context.user_data.pop("edit_field", None)
-    await update.message.reply_text("❌ Редактирование отменено.", reply_markup=kb_main_menu())
+    await update.message.reply_text("❌ Редактирование отменено.", reply_markup=kb_main_menu(is_admin(update.effective_user.id)))
     return ConversationHandler.END
 
 
