@@ -576,7 +576,7 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text("❌ Отменено.", reply_markup=kb_main_menu(is_admin(update.effective_user.id)))
+    await update.message.reply_text("❌ Отменено.", reply_markup=kb_main_menu(update.effective_user.id in config.ADMIN_IDS))
     return ConversationHandler.END
 
 
@@ -753,7 +753,7 @@ async def event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ── other commands ────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    admin = is_admin(update.effective_user.id)
+    admin = update.effective_user.id in config.ADMIN_IDS
     await update.message.reply_text(
         "👋 <b>Привет!</b> Я публикую анонсы мероприятий в канал.\n\n"
         "Используй кнопки меню внизу или команды:\n"
@@ -766,7 +766,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_help(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    admin = is_admin(update.effective_user.id)
+    admin = update.effective_user.id in config.ADMIN_IDS
     text = (
         "ℹ️ <b>Помощь</b>\n\n"
         "📅 <b>Мероприятия</b> — посмотреть ближайшие события, записаться на них\n"
@@ -1023,7 +1023,7 @@ async def _back_to_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("edit_event_id", None)
     context.user_data.pop("edit_field", None)
-    await update.message.reply_text("❌ Редактирование отменено.", reply_markup=kb_main_menu(is_admin(update.effective_user.id)))
+    await update.message.reply_text("❌ Редактирование отменено.", reply_markup=kb_main_menu(update.effective_user.id in config.ADMIN_IDS))
     return ConversationHandler.END
 
 
