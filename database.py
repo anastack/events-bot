@@ -76,6 +76,7 @@ def init_db() -> None:
                     user_id    BIGINT  NOT NULL,
                     username   TEXT,
                     first_name TEXT    NOT NULL,
+                    anonymous  INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (event_id, user_id)
                 )
             """)
@@ -125,6 +126,7 @@ def init_db() -> None:
                     user_id    INTEGER NOT NULL,
                     username   TEXT,
                     first_name TEXT    NOT NULL,
+                    anonymous  INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (event_id, user_id)
                 )
             """)
@@ -136,7 +138,7 @@ def init_db() -> None:
                     PRIMARY KEY (event_id, user_id, reminder_type)
                 )
             """)
-            existing = {row[1] for row in c.execute("PRAGMA table_info(events)")}
+            existing_events = {row[1] for row in c.execute("PRAGMA table_info(events)")}
             for col, ddl in [
                 ("description",  "TEXT"),
                 ("photo_file_id","TEXT"),
@@ -144,8 +146,11 @@ def init_db() -> None:
                 ("topic",        "TEXT"),
                 ("status",       "TEXT NOT NULL DEFAULT 'approved'"),
             ]:
-                if col not in existing:
+                if col not in existing_events:
                     c.execute(f"ALTER TABLE events ADD COLUMN {col} {ddl}")
+            existing_att = {row[1] for row in c.execute("PRAGMA table_info(attendees)")}
+            if "anonymous" not in existing_att:
+                c.execute("ALTER TABLE attendees ADD COLUMN anonymous INTEGER NOT NULL DEFAULT 0")
 
     logger.info(
         "DB ready. Backend: %s",
@@ -189,21 +194,26 @@ def add_event(
             return cur.lastrowid  # type: ignore[return-value]
 
 
-def add_attendee(event_id: int, user_id: int, username: Optional[str], first_name: str) -> None:
+def add_attendee(
+    event_id: int, user_id: int, username: Optional[str],
+    first_name: str, anonymous: bool = False,
+) -> None:
+    anon = 1 if anonymous else 0
     with _conn() as c:
         if _USE_PG:
             c.cursor().execute("""
-                INSERT INTO attendees (event_id, user_id, username, first_name)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO attendees (event_id, user_id, username, first_name, anonymous)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (event_id, user_id) DO UPDATE
                     SET username = EXCLUDED.username,
-                        first_name = EXCLUDED.first_name
-            """, (event_id, user_id, username, first_name))
+                        first_name = EXCLUDED.first_name,
+                        anonymous = EXCLUDED.anonymous
+            """, (event_id, user_id, username, first_name, anon))
         else:
             c.execute(
                 "INSERT OR REPLACE INTO attendees "
-                "(event_id, user_id, username, first_name) VALUES (?, ?, ?, ?)",
-                (event_id, user_id, username, first_name),
+                "(event_id, user_id, username, first_name, anonymous) VALUES (?, ?, ?, ?, ?)",
+                (event_id, user_id, username, first_name, anon),
             )
 
 
@@ -292,6 +302,16 @@ def get_event_submitter_id(event_id: int) -> Optional[int]:
 
 
 def get_attendees(event_id: int) -> List[Tuple]:
+    """Visible (non-anonymous) attendees for the public list."""
+    return _fetch(
+        "SELECT user_id, username, first_name FROM attendees "
+        "WHERE event_id = ? AND anonymous = 0",
+        (event_id,),
+    )
+
+
+def get_all_attendees(event_id: int) -> List[Tuple]:
+    """All attendees including anonymous — used for reminders."""
     return _fetch(
         "SELECT user_id, username, first_name FROM attendees WHERE event_id = ?",
         (event_id,),

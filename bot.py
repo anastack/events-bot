@@ -320,6 +320,15 @@ def kb_edit_topics(event_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def kb_go_confirm(event_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Да, покажи моё имя", callback_data=f"ev:go_yes:{event_id}"),
+        InlineKeyboardButton("🙈 Участвовать анонимно", callback_data=f"ev:go_anon:{event_id}"),
+    ], [
+        InlineKeyboardButton("❌ Отмена",              callback_data=f"ev:show:{event_id}"),
+    ]])
+
+
 def kb_events_with_filter(events: list, active_filter: str = "") -> InlineKeyboardMarkup:
     rows = []
     if active_filter:
@@ -851,14 +860,45 @@ async def event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif action == "go":
         if database.is_attending(event_id, user_id):
             database.remove_attendee(event_id, user_id)
+            count = database.get_attendee_count(event_id)
+            await query.edit_message_text(
+                fmt_event_detail(event, count, False),
+                parse_mode="HTML",
+                reply_markup=kb_event_actions(event_id, False, count),
+                disable_web_page_preview=True,
+            )
         else:
-            database.add_attendee(event_id, user_id, query.from_user.username, query.from_user.first_name)
+            await query.edit_message_text(
+                f"👥 <b>Запись на мероприятие</b>\n\n"
+                f"Хочешь ли ты, чтобы твоё имя отображалось в списке участников "
+                f"<b>«{e(event[1])}»</b>?",
+                parse_mode="HTML",
+                reply_markup=kb_go_confirm(event_id),
+            )
+
+    elif action == "go_yes":
+        database.add_attendee(
+            event_id, user_id, query.from_user.username,
+            query.from_user.first_name, anonymous=False,
+        )
         count = database.get_attendee_count(event_id)
-        going = database.is_attending(event_id, user_id)
         await query.edit_message_text(
-            fmt_event_detail(event, count, going),
+            fmt_event_detail(event, count, True),
             parse_mode="HTML",
-            reply_markup=kb_event_actions(event_id, going, count),
+            reply_markup=kb_event_actions(event_id, True, count),
+            disable_web_page_preview=True,
+        )
+
+    elif action == "go_anon":
+        database.add_attendee(
+            event_id, user_id, query.from_user.username,
+            query.from_user.first_name, anonymous=True,
+        )
+        count = database.get_attendee_count(event_id)
+        await query.edit_message_text(
+            fmt_event_detail(event, count, True),
+            parse_mode="HTML",
+            reply_markup=kb_event_actions(event_id, True, count),
             disable_web_page_preview=True,
         )
 
@@ -1161,7 +1201,7 @@ async def _check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # 1-day reminders: everything happening tomorrow
     for event_id, name, date_display, _ in database.get_events_on_date(tomorrow):
-        for user_id, _uname, _fname in database.get_attendees(event_id):
+        for user_id, _uname, _fname in database.get_all_attendees(event_id):
             if database.is_reminder_sent(event_id, user_id, "1day"):
                 continue
             try:
@@ -1190,7 +1230,7 @@ async def _check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
         minutes_until = (event_dt - now).total_seconds() / 60
         if not (90 <= minutes_until <= 150):
             continue
-        for user_id, _uname, _fname in database.get_attendees(event_id):
+        for user_id, _uname, _fname in database.get_all_attendees(event_id):
             if database.is_reminder_sent(event_id, user_id, "2hours"):
                 continue
             try:
