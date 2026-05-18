@@ -102,6 +102,14 @@ def init_db() -> None:
                 )
                 if not cur.fetchone():
                     cur.execute(f"ALTER TABLE events ADD COLUMN {col} {ddl}")
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='attendees' AND column_name='anonymous'"
+            )
+            if not cur.fetchone():
+                cur.execute(
+                    "ALTER TABLE attendees ADD COLUMN anonymous INTEGER NOT NULL DEFAULT 0"
+                )
         else:
             c.execute("""
                 CREATE TABLE IF NOT EXISTS events (
