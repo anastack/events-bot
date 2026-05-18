@@ -1,6 +1,6 @@
 import html
 import logging
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta
 
 from telegram import (
     InlineKeyboardButton,
@@ -164,11 +164,12 @@ def _preview_text(d: dict) -> str:
 # ── keyboards ─────────────────────────────────────────────────────────────────
 
 def kb_main_menu(admin: bool = False) -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton("📅 Мероприятия"), KeyboardButton("➕ Добавить")]]
+    rows = [
+        [KeyboardButton("📅 Мероприятия"), KeyboardButton("➕ Добавить")],
+        [KeyboardButton("🔖 Мои события"), KeyboardButton("ℹ️ Помощь")],
+    ]
     if admin:
-        rows.append([KeyboardButton("🔧 Управление"), KeyboardButton("ℹ️ Помощь")])
-    else:
-        rows.append([KeyboardButton("ℹ️ Помощь")])
+        rows.append([KeyboardButton("🔧 Управление")])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -316,6 +317,52 @@ def kb_edit_topics(event_id: int) -> InlineKeyboardMarkup:
     if row:
         rows.append(row)
     rows.append([InlineKeyboardButton("◀ Назад", callback_data=f"edit:{event_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def kb_events_with_filter(events: list, active_filter: str = "") -> InlineKeyboardMarkup:
+    rows = []
+    if active_filter:
+        rows.append([InlineKeyboardButton(
+            f"❌ Фильтр: {active_filter} — сбросить", callback_data="ev:all"
+        )])
+    else:
+        rows.append([
+            InlineKeyboardButton("🎪 По типу", callback_data="ev:types"),
+            InlineKeyboardButton("🏷 По теме",  callback_data="ev:topics"),
+        ])
+    for row in events:
+        event_id, name, date_display, *_ = row
+        parts = date_display.replace(",", "").split()
+        short_date = " ".join(parts[:2]) if len(parts) >= 2 else date_display
+        label = f"🎉 {name} — {short_date}"
+        if len(label) > 60:
+            label = label[:57] + "…"
+        rows.append([InlineKeyboardButton(label, callback_data=f"ev:show:{event_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def kb_type_filter(types: list) -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for i, t in enumerate(types):
+        row.append(InlineKeyboardButton(t, callback_data=f"ev:ft:{i}"))
+        if len(row) == 2:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("📋 Все мероприятия", callback_data="ev:all")])
+    return InlineKeyboardMarkup(rows)
+
+
+def kb_topic_filter(topics: list) -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for i, t in enumerate(topics):
+        row.append(InlineKeyboardButton(t, callback_data=f"ev:ftp:{i}"))
+        if len(row) == 2:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("📋 Все мероприятия", callback_data="ev:all")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -672,10 +719,26 @@ async def cmd_events(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("📭 <b>Ближайших мероприятий нет.</b>", parse_mode="HTML")
         return
     await update.message.reply_text(
-        "📅 <b>Ближайшие мероприятия:</b>\n"
-        "<i>Нажми на мероприятие для подробностей</i>",
+        "📅 <b>Ближайшие мероприятия:</b>\n<i>Нажми на мероприятие для подробностей</i>",
         parse_mode="HTML",
-        reply_markup=kb_event_list(events),
+        reply_markup=kb_events_with_filter(events),
+    )
+
+
+async def cmd_my_events(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    events = database.get_user_events(user_id)
+    if not events:
+        await update.message.reply_text(
+            "📭 <b>Ты ещё не записался ни на одно мероприятие.</b>\n\n"
+            "<i>Нажми «Иду» на странице мероприятия, чтобы записаться.</i>",
+            parse_mode="HTML",
+        )
+        return
+    await update.message.reply_text(
+        "🔖 <b>Мои мероприятия:</b>\n<i>Нажми для подробностей</i>",
+        parse_mode="HTML",
+        reply_markup=kb_events_with_filter(events),
     )
 
 
@@ -684,7 +747,7 @@ async def event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     data: str = query.data
 
-    if data == "ev:list":
+    if data in ("ev:list", "ev:all"):
         events = database.get_upcoming_events()
         if not events:
             await query.edit_message_text("📭 <b>Ближайших мероприятий нет.</b>", parse_mode="HTML")
@@ -692,7 +755,67 @@ async def event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text(
             "📅 <b>Ближайшие мероприятия:</b>\n<i>Нажми на мероприятие для подробностей</i>",
             parse_mode="HTML",
-            reply_markup=kb_event_list(events),
+            reply_markup=kb_events_with_filter(events),
+        )
+        return
+
+    if data == "ev:types":
+        types = database.get_distinct_event_types()
+        if not types:
+            await query.answer("Нет мероприятий с указанным типом", show_alert=True)
+            return
+        await query.edit_message_text(
+            "🎪 <b>Выбери тип мероприятия:</b>",
+            parse_mode="HTML",
+            reply_markup=kb_type_filter(types),
+        )
+        return
+
+    if data == "ev:topics":
+        topics = database.get_distinct_topics()
+        if not topics:
+            await query.answer("Нет мероприятий с указанной темой", show_alert=True)
+            return
+        await query.edit_message_text(
+            "🏷 <b>Выбери тему мероприятия:</b>",
+            parse_mode="HTML",
+            reply_markup=kb_topic_filter(topics),
+        )
+        return
+
+    if data.startswith("ev:ft:"):
+        idx = int(data.split(":")[2])
+        types = database.get_distinct_event_types()
+        if idx >= len(types):
+            await query.answer("Фильтр устарел, попробуй снова", show_alert=True)
+            return
+        chosen = types[idx]
+        events = database.get_events_filtered(event_type=chosen)
+        if not events:
+            await query.answer(f"Нет мероприятий типа «{chosen}»", show_alert=True)
+            return
+        await query.edit_message_text(
+            f"📅 <b>Тип: {e(chosen)}</b>\n<i>Нажми на мероприятие для подробностей</i>",
+            parse_mode="HTML",
+            reply_markup=kb_events_with_filter(events, active_filter=chosen),
+        )
+        return
+
+    if data.startswith("ev:ftp:"):
+        idx = int(data.split(":")[2])
+        topics = database.get_distinct_topics()
+        if idx >= len(topics):
+            await query.answer("Фильтр устарел, попробуй снова", show_alert=True)
+            return
+        chosen = topics[idx]
+        events = database.get_events_filtered(topic=chosen)
+        if not events:
+            await query.answer(f"Нет мероприятий по теме «{chosen}»", show_alert=True)
+            return
+        await query.edit_message_text(
+            f"📅 <b>Тема: {e(chosen)}</b>\n<i>Нажми на мероприятие для подробностей</i>",
+            parse_mode="HTML",
+            reply_markup=kb_events_with_filter(events, active_filter=chosen),
         )
         return
 
@@ -769,11 +892,13 @@ async def cmd_help(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     admin = update.effective_user.id in config.ADMIN_IDS
     text = (
         "ℹ️ <b>Помощь</b>\n\n"
-        "📅 <b>Мероприятия</b> — посмотреть ближайшие события, записаться на них\n"
-        "➕ <b>Добавить</b> — предложить новое мероприятие\n"
+        "📅 <b>Мероприятия</b> — ближайшие события с фильтром по типу и теме\n"
+        "🔖 <b>Мои события</b> — мероприятия, на которые ты записался\n"
+        "➕ <b>Добавить</b> — предложить новое мероприятие\n\n"
+        "После записи на мероприятие бот напомнит за день и за 2 часа до начала.\n"
     )
     if admin:
-        text += "🔧 <b>Управление</b> — редактирование и удаление\n\n"
+        text += "\n🔧 <b>Управление</b> — редактирование и удаление мероприятий"
     else:
         text += "\nПри добавлении мероприятие сначала проходит проверку у администратора."
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb_main_menu(admin))
@@ -1029,6 +1154,60 @@ async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 # ── scheduler ─────────────────────────────────────────────────────────────────
 
+async def _check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
+    now = datetime.now(tz=config.TIMEZONE).replace(tzinfo=None)
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    today = now.strftime("%Y-%m-%d")
+
+    # 1-day reminders: everything happening tomorrow
+    for event_id, name, date_display, _ in database.get_events_on_date(tomorrow):
+        for user_id, _uname, _fname in database.get_attendees(event_id):
+            if database.is_reminder_sent(event_id, user_id, "1day"):
+                continue
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"🔔 <b>Напоминание!</b>\n\n"
+                        f"Завтра мероприятие <b>«{e(name)}»</b>\n"
+                        f"📅 {e(date_display)}"
+                    ),
+                    parse_mode="HTML",
+                )
+                database.mark_reminder_sent(event_id, user_id, "1day")
+            except Exception:
+                logger.exception("1-day reminder failed for user %d", user_id)
+
+    # 2-hour reminders: events today with a specific time
+    for event_id, name, date_display, _ in database.get_events_on_date(today):
+        if ", " not in date_display:
+            continue
+        try:
+            h, m = map(int, date_display.split(", ")[1].split(":"))
+        except (IndexError, ValueError):
+            continue
+        event_dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        minutes_until = (event_dt - now).total_seconds() / 60
+        if not (90 <= minutes_until <= 150):
+            continue
+        for user_id, _uname, _fname in database.get_attendees(event_id):
+            if database.is_reminder_sent(event_id, user_id, "2hours"):
+                continue
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"⏰ <b>Скоро начнётся!</b>\n\n"
+                        f"Через ~2 часа мероприятие <b>«{e(name)}»</b>\n"
+                        f"📅 {e(date_display)}"
+                    ),
+                    parse_mode="HTML",
+                )
+                database.mark_reminder_sent(event_id, user_id, "2hours")
+            except Exception:
+                logger.exception("2-hour reminder failed for user %d", user_id)
+
+
 async def _send_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
     events = database.get_upcoming_events()
     try:
@@ -1091,8 +1270,9 @@ def main() -> None:
         per_message=False,
     )
 
-    # Menu button text handlers (work when user is not in a conversation)
+    # Menu button text handlers
     app.add_handler(MessageHandler(filters.Regex(r"^📅 Мероприятия$"), cmd_events))
+    app.add_handler(MessageHandler(filters.Regex(r"^🔖 Мои события$"), cmd_my_events))
     app.add_handler(MessageHandler(filters.Regex(r"^🔧 Управление$"),  cmd_admin))
     app.add_handler(MessageHandler(filters.Regex(r"^ℹ️ Помощь$"),     cmd_help))
 
@@ -1110,6 +1290,7 @@ def main() -> None:
         hour=config.DIGEST_HOUR, minute=config.DIGEST_MINUTE, tzinfo=config.TIMEZONE
     )
     app.job_queue.run_repeating(_send_digest, interval=2 * 24 * 60 * 60, first=first_run)
+    app.job_queue.run_repeating(_check_reminders, interval=30 * 60, first=60)
 
     logger.info(
         "Бот запущен. Дайджест в %02d:%02d (%s) каждые 2 дня.",

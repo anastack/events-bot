@@ -79,6 +79,14 @@ def init_db() -> None:
                     PRIMARY KEY (event_id, user_id)
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS reminders (
+                    event_id      INTEGER NOT NULL,
+                    user_id       BIGINT  NOT NULL,
+                    reminder_type TEXT    NOT NULL,
+                    PRIMARY KEY (event_id, user_id, reminder_type)
+                )
+            """)
             for col, ddl in [
                 ("description",  "TEXT"),
                 ("photo_file_id","TEXT"),
@@ -118,6 +126,14 @@ def init_db() -> None:
                     username   TEXT,
                     first_name TEXT    NOT NULL,
                     PRIMARY KEY (event_id, user_id)
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS reminders (
+                    event_id      INTEGER NOT NULL,
+                    user_id       INTEGER NOT NULL,
+                    reminder_type TEXT    NOT NULL,
+                    PRIMARY KEY (event_id, user_id, reminder_type)
                 )
             """)
             existing = {row[1] for row in c.execute("PRAGMA table_info(events)")}
@@ -298,3 +314,90 @@ def get_all_events() -> List[Tuple]:
     return _fetch(
         "SELECT id, name, date_display, date_sort FROM events ORDER BY date_sort ASC"
     )
+
+
+# ── filter & search ───────────────────────────────────────────────────────────
+
+def get_events_filtered(event_type: Optional[str] = None, topic: Optional[str] = None) -> List[Tuple]:
+    today = date.today().isoformat()
+    conditions = ["date_sort >= ?", "status = 'approved'"]
+    params: list = [today]
+    if event_type is not None:
+        conditions.append("event_type = ?")
+        params.append(event_type)
+    if topic is not None:
+        conditions.append("topic = ?")
+        params.append(topic)
+    sql = (
+        "SELECT id, name, date_display, location, link, description, "
+        "photo_file_id, event_type, topic FROM events "
+        f"WHERE {' AND '.join(conditions)} ORDER BY date_sort ASC"
+    )
+    return _fetch(sql, tuple(params))
+
+
+def get_distinct_event_types() -> List[str]:
+    today = date.today().isoformat()
+    rows = _fetch(
+        "SELECT DISTINCT event_type FROM events "
+        "WHERE date_sort >= ? AND status = 'approved' AND event_type IS NOT NULL "
+        "ORDER BY event_type",
+        (today,),
+    )
+    return [r[0] for r in rows]
+
+
+def get_distinct_topics() -> List[str]:
+    today = date.today().isoformat()
+    rows = _fetch(
+        "SELECT DISTINCT topic FROM events "
+        "WHERE date_sort >= ? AND status = 'approved' AND topic IS NOT NULL "
+        "ORDER BY topic",
+        (today,),
+    )
+    return [r[0] for r in rows]
+
+
+def get_user_events(user_id: int) -> List[Tuple]:
+    today = date.today().isoformat()
+    return _fetch(
+        "SELECT e.id, e.name, e.date_display, e.location, e.link, e.description, "
+        "e.photo_file_id, e.event_type, e.topic "
+        "FROM events e JOIN attendees a ON a.event_id = e.id "
+        "WHERE a.user_id = ? AND e.date_sort >= ? AND e.status = 'approved' "
+        "ORDER BY e.date_sort ASC",
+        (user_id, today),
+    )
+
+
+def get_events_on_date(date_str: str) -> List[Tuple]:
+    return _fetch(
+        "SELECT id, name, date_display, date_sort FROM events "
+        "WHERE date_sort = ? AND status = 'approved'",
+        (date_str,),
+    )
+
+
+# ── reminders ─────────────────────────────────────────────────────────────────
+
+def is_reminder_sent(event_id: int, user_id: int, reminder_type: str) -> bool:
+    return _fetchone(
+        "SELECT 1 FROM reminders WHERE event_id = ? AND user_id = ? AND reminder_type = ?",
+        (event_id, user_id, reminder_type),
+    ) is not None
+
+
+def mark_reminder_sent(event_id: int, user_id: int, reminder_type: str) -> None:
+    with _conn() as c:
+        if _USE_PG:
+            c.cursor().execute(
+                "INSERT INTO reminders (event_id, user_id, reminder_type) "
+                "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                (event_id, user_id, reminder_type),
+            )
+        else:
+            c.execute(
+                "INSERT OR IGNORE INTO reminders (event_id, user_id, reminder_type) "
+                "VALUES (?, ?, ?)",
+                (event_id, user_id, reminder_type),
+            )
