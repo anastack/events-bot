@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Conversation states
 NAME, DATE, LOCATION, LINK, DESCRIPTION, PHOTO, EVENT_TYPE, TOPIC, CONFIRM = range(9)
 EDIT_FIELD, EDIT_TEXT, EDIT_PHOTO, EDIT_SELECT = 9, 10, 11, 12
+EVENT_TYPE_CUSTOM, TOPIC_CUSTOM = 13, 14
 
 FIELD_NAMES = {
     "name": "Название", "date": "Дата", "location": "Место",
@@ -417,8 +418,25 @@ async def step_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def step_event_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    context.user_data["event_type"] = query.data.split(":", 2)[2]
+    selected = query.data.split(":", 2)[2]
+    if selected == "Другое":
+        await query.edit_message_text(
+            "🎪 Шаг <b>7 / 8</b>: Введи свой тип мероприятия:",
+            parse_mode="HTML",
+        )
+        return EVENT_TYPE_CUSTOM
+    context.user_data["event_type"] = selected
     await query.edit_message_text(
+        "🏷 Шаг <b>8 / 8</b>: Тема мероприятия",
+        parse_mode="HTML",
+        reply_markup=kb_topics(),
+    )
+    return TOPIC
+
+
+async def step_event_type_custom(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["event_type"] = update.message.text.strip()
+    await update.message.reply_text(
         "🏷 Шаг <b>8 / 8</b>: Тема мероприятия",
         parse_mode="HTML",
         reply_markup=kb_topics(),
@@ -429,10 +447,33 @@ async def step_event_type(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def step_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    context.user_data["topic"] = query.data.split(":", 2)[2]
+    selected = query.data.split(":", 2)[2]
+    if selected == "Другое":
+        await query.edit_message_text(
+            "🏷 Шаг <b>8 / 8</b>: Введи свою тему мероприятия:",
+            parse_mode="HTML",
+        )
+        return TOPIC_CUSTOM
+    context.user_data["topic"] = selected
+    return await _show_confirm(query, context)
 
+
+async def step_topic_custom(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["topic"] = update.message.text.strip()
     d = context.user_data
-    # direct publish only when no admins are configured at all
+    direct = not config.ADMIN_IDS
+    text = _preview_text(d) + "\n\n<i>Всё верно?</i>"
+    await update.message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=kb_confirm(direct),
+        disable_web_page_preview=True,
+    )
+    return CONFIRM
+
+
+async def _show_confirm(query, context: ContextTypes.DEFAULT_TYPE) -> int:
+    d = context.user_data
     direct = not config.ADMIN_IDS
     text = _preview_text(d) + "\n\n<i>Всё верно?</i>"
     await query.edit_message_text(
@@ -890,13 +931,23 @@ async def choose_field(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return EDIT_PHOTO if field == "photo" else EDIT_TEXT
 
 
-async def process_edit_select(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> int:
+async def process_edit_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
 
     parts = query.data.split(":", 3)
     _, field, value, event_id_str = parts
     event_id = int(event_id_str)
+
+    if value == "Другое":
+        context.user_data["edit_event_id"] = event_id
+        context.user_data["edit_field"] = field
+        label = "тип мероприятия" if field == "event_type" else "тему"
+        await query.edit_message_text(
+            f"✏️ Введи свой {label}:\n\n<i>/cancel для отмены</i>",
+            parse_mode="HTML",
+        )
+        return EDIT_TEXT
 
     database.update_event_field(event_id, field, value)
     event = database.get_event_by_id(event_id)
@@ -1014,7 +1065,9 @@ def main() -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, step_photo),
             ],
             EVENT_TYPE: [CallbackQueryHandler(step_event_type, pattern="^add:type:")],
+            EVENT_TYPE_CUSTOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, step_event_type_custom)],
             TOPIC:      [CallbackQueryHandler(step_topic,      pattern="^add:topic:")],
+            TOPIC_CUSTOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, step_topic_custom)],
             CONFIRM:    [CallbackQueryHandler(step_confirm,    pattern="^confirm:")],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],

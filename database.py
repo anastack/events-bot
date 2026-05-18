@@ -2,7 +2,11 @@ import sqlite3
 from datetime import date, datetime
 from typing import List, Optional, Tuple
 
-DB_PATH = "events.db"
+import os as _os
+DB_PATH = _os.environ.get(
+    "DB_PATH",
+    _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "events.db"),
+)
 
 
 def init_db() -> None:
