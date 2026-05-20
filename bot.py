@@ -1264,25 +1264,30 @@ async def _send_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+async def _on_startup(app) -> None:
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook удалён, pending updates сброшены")
+    except Exception:
+        logger.exception("Не удалось удалить webhook")
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await app.bot.send_message(chat_id=admin_id, text="✅ Бот запущен и готов к работе.")
+        except Exception:
+            pass
+
+
 def main() -> None:
     database.init_db()
 
     defaults = Defaults(tzinfo=config.TIMEZONE)
-    app = Application.builder().token(config.BOT_TOKEN).defaults(defaults).build()
-
-    async def _on_startup(app):
-        try:
-            await app.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Webhook удалён, pending updates сброшены")
-        except Exception:
-            logger.exception("Не удалось удалить webhook")
-        for admin_id in config.ADMIN_IDS:
-            try:
-                await app.bot.send_message(chat_id=admin_id, text="✅ Бот запущен и готов к работе.")
-            except Exception:
-                pass
-
-    app.post_init = _on_startup
+    app = (
+        Application.builder()
+        .token(config.BOT_TOKEN)
+        .defaults(defaults)
+        .post_init(_on_startup)
+        .build()
+    )
 
     add_conv = ConversationHandler(
         entry_points=[
