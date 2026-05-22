@@ -688,9 +688,11 @@ async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "topic": event[8] if len(event) > 8 else None,
         }
         await _publish_event_to_channel(context, d, event_id)
-        await query.edit_message_text(
-            f"✅ <b>«{e(name)}»</b> одобрено и опубликовано в канале.", parse_mode="HTML"
-        )
+        ok_text = f"✅ <b>«{e(name)}»</b> одобрено и опубликовано в канале."
+        if query.message.photo:
+            await query.edit_message_caption(ok_text, parse_mode="HTML")
+        else:
+            await query.edit_message_text(ok_text, parse_mode="HTML")
         if submitter_id:
             try:
                 await context.bot.send_message(
@@ -703,9 +705,11 @@ async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     elif action == "no":
         database.update_event_field(event_id, "status", "rejected")
-        await query.edit_message_text(
-            f"❌ <b>«{e(name)}»</b> отклонено.", parse_mode="HTML"
-        )
+        no_text = f"❌ <b>«{e(name)}»</b> отклонено."
+        if query.message.photo:
+            await query.edit_message_caption(no_text, parse_mode="HTML")
+        else:
+            await query.edit_message_text(no_text, parse_mode="HTML")
         if submitter_id:
             try:
                 await context.bot.send_message(
