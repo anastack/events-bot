@@ -167,10 +167,34 @@ def kb_main_menu(admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton("📅 Мероприятия"), KeyboardButton("➕ Добавить")],
         [KeyboardButton("🔖 Мои события"), KeyboardButton("ℹ️ Помощь")],
+        [KeyboardButton("⚙️ Мои интересы")],
     ]
     if admin:
         rows.append([KeyboardButton("🔧 Управление")])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def _get_all_topics() -> list:
+    db_topics = database.get_distinct_topics()
+    all_t = list(TOPICS)
+    for t in db_topics:
+        if t not in all_t:
+            all_t.append(t)
+    return all_t
+
+
+def kb_onboard_topics(selected: set, all_topics: list) -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for topic in all_topics:
+        label = f"✅ {topic}" if topic in selected else topic
+        row.append(InlineKeyboardButton(label, callback_data=f"ob:t:{topic}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("✅ Готово", callback_data="ob:done")])
+    return InlineKeyboardMarkup(rows)
 
 
 def kb_confirm(is_admin_user: bool = True) -> InlineKeyboardMarkup:
@@ -696,10 +720,13 @@ async def approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def _publish_event_to_channel(
     context: ContextTypes.DEFAULT_TYPE, d: dict, _event_id: int
 ) -> None:
-    post = fmt_event_post(
-        d["name"], d["date_display"], d["location"],
-        d.get("link"), d.get("description"),
-        d.get("event_type"), d.get("topic"),
+    post = (
+        fmt_event_post(
+            d["name"], d["date_display"], d["location"],
+            d.get("link"), d.get("description"),
+            d.get("event_type"), d.get("topic"),
+        )
+        + "\n\n🤖 Больше мероприятий в нашем боте: @cuda_idti_bot"
     )
     photo = d.get("photo_file_id")
     if photo:
@@ -718,6 +745,35 @@ async def _publish_event_to_channel(
             chat_id=config.CHANNEL_ID, text=post,
             parse_mode="HTML", disable_web_page_preview=True,
         )
+
+    topic = d.get("topic")
+    if topic:
+        subscribers = database.get_users_subscribed_to_topic(topic)
+        if subscribers:
+            notif_lines = [
+                f"🔔 <b>Новое мероприятие по теме «{e(topic)}»!</b>",
+                "",
+                f"🎉 <b>{e(d['name'])}</b>",
+                f"📅 {e(d['date_display'])}",
+                f"📍 {e(d['location'])}",
+            ]
+            if d.get("link"):
+                notif_lines.append(f"🎟 {link_html(d['link'])}")
+            notif_text = "\n".join(notif_lines)
+            notif_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔕 Отключить уведомления", callback_data="sub:off"),
+            ]])
+            for sub_uid in subscribers:
+                try:
+                    await context.bot.send_message(
+                        chat_id=sub_uid,
+                        text=notif_text,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                        reply_markup=notif_kb,
+                    )
+                except Exception:
+                    logger.warning("Не удалось отправить уведомление пользователю %d", sub_uid)
 
 
 # ── event browsing ────────────────────────────────────────────────────────────
@@ -916,16 +972,129 @@ async def event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ── other commands ────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    admin = update.effective_user.id in config.ADMIN_IDS
+    user_id = update.effective_user.id
+    admin = user_id in config.ADMIN_IDS
+    existing_topics = database.get_user_topics(user_id)
+    if existing_topics:
+        await update.message.reply_text(
+            "👋 <b>Привет!</b> Я публикую анонсы мероприятий в канал.\n\n"
+            "Используй кнопки меню внизу или команды:\n"
+            "/events — список ближайших мероприятий\n"
+            "/add — добавить мероприятие\n"
+            "/cancel — отменить текущее действие",
+            parse_mode="HTML",
+            reply_markup=kb_main_menu(admin),
+        )
+    else:
+        context.user_data["ob_selected"] = set()
+        context.user_data.pop("ob_from_settings", None)
+        await update.message.reply_text(
+            "👋 <b>Привет!</b> Я публикую анонсы мероприятий.\n\n"
+            "Для начала скажи, <b>какие темы тебе интересны?</b>\n"
+            "<i>Выбери одну или несколько тем и нажми «Готово»:</i>",
+            parse_mode="HTML",
+            reply_markup=kb_onboard_topics(set(), _get_all_topics()),
+        )
+
+
+async def cmd_interests(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    current = set(database.get_user_topics(user_id))
+    context.user_data["ob_selected"] = current.copy()
+    context.user_data["ob_from_settings"] = True
     await update.message.reply_text(
-        "👋 <b>Привет!</b> Я публикую анонсы мероприятий в канал.\n\n"
-        "Используй кнопки меню внизу или команды:\n"
-        "/events — список ближайших мероприятий\n"
-        "/add — добавить мероприятие\n"
-        "/cancel — отменить текущее действие",
+        "⚙️ <b>Мои интересы</b>\n\nВыбери темы, которые тебе интересны:",
         parse_mode="HTML",
-        reply_markup=kb_main_menu(admin),
+        reply_markup=kb_onboard_topics(current, _get_all_topics()),
     )
+
+
+async def onboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+
+    if data.startswith("ob:t:"):
+        topic = data[5:]
+        await query.answer()
+        selected = context.user_data.get("ob_selected", set())
+        if topic in selected:
+            selected.discard(topic)
+        else:
+            selected.add(topic)
+        context.user_data["ob_selected"] = selected
+        await query.edit_message_reply_markup(kb_onboard_topics(selected, _get_all_topics()))
+
+    elif data == "ob:done":
+        selected = context.user_data.get("ob_selected", set())
+        if not selected:
+            await query.answer("Выбери хотя бы одну тему!", show_alert=True)
+            return
+        await query.answer()
+        database.set_user_topics(user_id, list(selected))
+        topics_text = ", ".join(sorted(selected))
+        from_settings = context.user_data.get("ob_from_settings", False)
+        notify_pref = database.get_notification_pref(user_id)
+
+        if from_settings and notify_pref is not None:
+            status = "включены" if notify_pref else "отключены"
+            icon = "🔔" if notify_pref else "🔕"
+            toggle_label = "🔕 Отключить уведомления" if notify_pref else "🔔 Включить уведомления"
+            toggle_cb = "ob:notify:no" if notify_pref else "ob:notify:yes"
+            await query.edit_message_text(
+                f"✅ <b>Интересы сохранены:</b> {e(topics_text)}\n\n"
+                f"{icon} Уведомления: <b>{status}</b>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(toggle_label, callback_data=toggle_cb),
+                ]]),
+            )
+        else:
+            await query.edit_message_text(
+                f"✅ Отлично! Твои интересы: <b>{e(topics_text)}</b>\n\n"
+                "Хочешь получать уведомления о новых мероприятиях по твоим темам?",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔔 Да, хочу!", callback_data="ob:notify:yes"),
+                    InlineKeyboardButton("🔕 Нет", callback_data="ob:notify:no"),
+                ]]),
+            )
+
+    elif data.startswith("ob:notify:"):
+        choice = data[10:]
+        await query.answer()
+        enabled = choice == "yes"
+        database.set_notification_pref(user_id, enabled)
+        admin = user_id in config.ADMIN_IDS
+        if enabled:
+            result_text = "🔔 <b>Уведомления включены!</b> Пришлём уведомление, когда появится новое мероприятие по твоим темам."
+        else:
+            result_text = "🔕 <b>Уведомления отключены.</b> Включить можно в разделе «Мои интересы»."
+        await query.edit_message_text(result_text, parse_mode="HTML")
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="👋 <b>Добро пожаловать!</b> Используй меню ниже:",
+            parse_mode="HTML",
+            reply_markup=kb_main_menu(admin),
+        )
+        context.user_data.pop("ob_selected", None)
+        context.user_data.pop("ob_from_settings", None)
+
+
+async def sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    if query.data == "sub:off":
+        database.set_notification_pref(user_id, False)
+        await query.edit_message_reply_markup(InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔔 Включить уведомления", callback_data="sub:on"),
+        ]]))
+    elif query.data == "sub:on":
+        database.set_notification_pref(user_id, True)
+        await query.edit_message_reply_markup(InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔕 Отключить уведомления", callback_data="sub:off"),
+        ]]))
 
 
 async def cmd_help(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1330,20 +1499,24 @@ def main() -> None:
     )
 
     # Menu button text handlers
-    app.add_handler(MessageHandler(filters.Regex(r"^📅 Мероприятия$"), cmd_events))
-    app.add_handler(MessageHandler(filters.Regex(r"^🔖 Мои события$"), cmd_my_events))
-    app.add_handler(MessageHandler(filters.Regex(r"^🔧 Управление$"),  cmd_admin))
-    app.add_handler(MessageHandler(filters.Regex(r"^ℹ️ Помощь$"),     cmd_help))
+    app.add_handler(MessageHandler(filters.Regex(r"^📅 Мероприятия$"),   cmd_events))
+    app.add_handler(MessageHandler(filters.Regex(r"^🔖 Мои события$"),   cmd_my_events))
+    app.add_handler(MessageHandler(filters.Regex(r"^🔧 Управление$"),    cmd_admin))
+    app.add_handler(MessageHandler(filters.Regex(r"^ℹ️ Помощь$"),       cmd_help))
+    app.add_handler(MessageHandler(filters.Regex(r"^⚙️ Мои интересы$"), cmd_interests))
 
-    app.add_handler(CommandHandler("start",  cmd_start))
-    app.add_handler(CommandHandler("events", cmd_events))
-    app.add_handler(CommandHandler("digest", cmd_digest))
-    app.add_handler(CommandHandler("admin",  cmd_admin))
+    app.add_handler(CommandHandler("start",     cmd_start))
+    app.add_handler(CommandHandler("events",    cmd_events))
+    app.add_handler(CommandHandler("digest",    cmd_digest))
+    app.add_handler(CommandHandler("admin",     cmd_admin))
+    app.add_handler(CommandHandler("interests", cmd_interests))
     app.add_handler(edit_conv)
     app.add_handler(add_conv)
     app.add_handler(CallbackQueryHandler(approval_callback, pattern="^appr:"))
     app.add_handler(CallbackQueryHandler(admin_callback,    pattern="^adm:"))
     app.add_handler(CallbackQueryHandler(event_callback,    pattern="^ev:"))
+    app.add_handler(CallbackQueryHandler(onboard_callback,  pattern="^ob:"))
+    app.add_handler(CallbackQueryHandler(sub_callback,      pattern="^sub:"))
 
     first_run = dt_time(
         hour=config.DIGEST_HOUR, minute=config.DIGEST_MINUTE, tzinfo=config.TIMEZONE

@@ -110,6 +110,19 @@ def init_db() -> None:
                 cur.execute(
                     "ALTER TABLE attendees ADD COLUMN anonymous INTEGER NOT NULL DEFAULT 0"
                 )
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_topics (
+                    user_id BIGINT NOT NULL,
+                    topic   TEXT   NOT NULL,
+                    PRIMARY KEY (user_id, topic)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_notifications (
+                    user_id BIGINT  PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 1
+                )
+            """)
         else:
             c.execute("""
                 CREATE TABLE IF NOT EXISTS events (
@@ -159,6 +172,19 @@ def init_db() -> None:
             existing_att = {row[1] for row in c.execute("PRAGMA table_info(attendees)")}
             if "anonymous" not in existing_att:
                 c.execute("ALTER TABLE attendees ADD COLUMN anonymous INTEGER NOT NULL DEFAULT 0")
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS user_topics (
+                    user_id INTEGER NOT NULL,
+                    topic   TEXT    NOT NULL,
+                    PRIMARY KEY (user_id, topic)
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS user_notifications (
+                    user_id INTEGER PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 1
+                )
+            """)
 
     logger.info(
         "DB ready. Backend: %s",
@@ -429,3 +455,60 @@ def mark_reminder_sent(event_id: int, user_id: int, reminder_type: str) -> None:
                 "VALUES (?, ?, ?)",
                 (event_id, user_id, reminder_type),
             )
+
+
+# ── user topics & notifications ───────────────────────────────────────────────
+
+def get_user_topics(user_id: int) -> List[str]:
+    rows = _fetch("SELECT topic FROM user_topics WHERE user_id = ?", (user_id,))
+    return [r[0] for r in rows]
+
+
+def set_user_topics(user_id: int, topics: List[str]) -> None:
+    with _conn() as c:
+        if _USE_PG:
+            cur = c.cursor()
+            cur.execute("DELETE FROM user_topics WHERE user_id = %s", (user_id,))
+            for t in topics:
+                cur.execute(
+                    "INSERT INTO user_topics (user_id, topic) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (user_id, t),
+                )
+        else:
+            c.execute("DELETE FROM user_topics WHERE user_id = ?", (user_id,))
+            for t in topics:
+                c.execute(
+                    "INSERT OR IGNORE INTO user_topics (user_id, topic) VALUES (?, ?)",
+                    (user_id, t),
+                )
+
+
+def get_notification_pref(user_id: int) -> Optional[bool]:
+    row = _fetchone("SELECT enabled FROM user_notifications WHERE user_id = ?", (user_id,))
+    return None if row is None else bool(row[0])
+
+
+def set_notification_pref(user_id: int, enabled: bool) -> None:
+    val = 1 if enabled else 0
+    with _conn() as c:
+        if _USE_PG:
+            c.cursor().execute(
+                "INSERT INTO user_notifications (user_id, enabled) VALUES (%s, %s) "
+                "ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled",
+                (user_id, val),
+            )
+        else:
+            c.execute(
+                "INSERT OR REPLACE INTO user_notifications (user_id, enabled) VALUES (?, ?)",
+                (user_id, val),
+            )
+
+
+def get_users_subscribed_to_topic(topic: str) -> List[int]:
+    rows = _fetch(
+        "SELECT ut.user_id FROM user_topics ut "
+        "JOIN user_notifications un ON un.user_id = ut.user_id "
+        "WHERE ut.topic = ? AND un.enabled = 1",
+        (topic,),
+    )
+    return [r[0] for r in rows]
