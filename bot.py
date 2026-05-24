@@ -143,7 +143,7 @@ def fmt_digest(events: list) -> str:
         if link:
             lines.append(f"    🎟 {link_html(link)}")
         lines.append("")
-    lines += ["━━━━━━━━━━━━━━━━━━━━━━━━", "<i>Следующий дайджест — через 2 дня</i>"]
+    lines += ["━━━━━━━━━━━━━━━━━━━━━━━━"]
     return "\n".join(lines)
 
 

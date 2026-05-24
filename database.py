@@ -2,7 +2,7 @@ import logging
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -307,15 +307,18 @@ def _fetchone(sql: str, params: tuple = ()) -> Optional[Tuple]:
 
 
 def get_upcoming_events() -> List[Tuple]:
+    today = date.today()
+    two_weeks = today + timedelta(weeks=2)
     return _fetch(
         """
         SELECT id, name, date_display, location, link, description,
                photo_file_id, event_type, topic
         FROM events
-        WHERE date_sort >= ? AND status = 'approved'
+        WHERE date_sort >= ? AND date_sort <= ? AND status = 'approved'
         ORDER BY date_sort ASC
+        LIMIT 10
         """,
-        (date.today().isoformat(),),
+        (today.isoformat(), two_weeks.isoformat()),
     )
 
 
