@@ -374,14 +374,16 @@ def get_all_events() -> List[Tuple]:
 
 
 def get_all_approved_events() -> List[Tuple]:
+    today = date.today().isoformat()
     return _fetch(
         """
         SELECT id, name, date_display, location, link, description,
                photo_file_id, event_type, topic
         FROM events
-        WHERE status = 'approved'
+        WHERE date_sort >= ? AND status = 'approved'
         ORDER BY date_sort ASC
-        """
+        """,
+        (today,),
     )
 
 
