@@ -783,12 +783,12 @@ async def _publish_event_to_channel(
 # ── event browsing ────────────────────────────────────────────────────────────
 
 async def cmd_events(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    events = database.get_upcoming_events()
+    events = database.get_all_approved_events()
     if not events:
-        await update.message.reply_text("📭 <b>Ближайших мероприятий нет.</b>", parse_mode="HTML")
+        await update.message.reply_text("📭 <b>Мероприятий пока нет.</b>", parse_mode="HTML")
         return
     await update.message.reply_text(
-        "📅 <b>Ближайшие мероприятия:</b>\n<i>Нажми на мероприятие для подробностей</i>",
+        "📅 <b>Все мероприятия:</b>\n<i>Нажми на мероприятие для подробностей</i>",
         parse_mode="HTML",
         reply_markup=kb_events_with_filter(events),
     )
@@ -817,12 +817,12 @@ async def event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     data: str = query.data
 
     if data in ("ev:list", "ev:all"):
-        events = database.get_upcoming_events()
+        events = database.get_all_approved_events()
         if not events:
-            await query.edit_message_text("📭 <b>Ближайших мероприятий нет.</b>", parse_mode="HTML")
+            await query.edit_message_text("📭 <b>Мероприятий пока нет.</b>", parse_mode="HTML")
             return
         await query.edit_message_text(
-            "📅 <b>Ближайшие мероприятия:</b>\n<i>Нажми на мероприятие для подробностей</i>",
+            "📅 <b>Все мероприятия:</b>\n<i>Нажми на мероприятие для подробностей</i>",
             parse_mode="HTML",
             reply_markup=kb_events_with_filter(events),
         )

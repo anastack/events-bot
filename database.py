@@ -373,6 +373,18 @@ def get_all_events() -> List[Tuple]:
     )
 
 
+def get_all_approved_events() -> List[Tuple]:
+    return _fetch(
+        """
+        SELECT id, name, date_display, location, link, description,
+               photo_file_id, event_type, topic
+        FROM events
+        WHERE status = 'approved'
+        ORDER BY date_sort ASC
+        """
+    )
+
+
 # ── filter & search ───────────────────────────────────────────────────────────
 
 def get_events_filtered(event_type: Optional[str] = None, topic: Optional[str] = None) -> List[Tuple]:
