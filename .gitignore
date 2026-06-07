@@ -4,3 +4,5 @@ __pycache__/
 *.pyo
 events.db
 .claude/
+*.session
+generate_session.py
