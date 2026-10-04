@@ -28,6 +28,9 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import MessageMediaPhoto
 
+import database
+from parser_channels import normalize_channel
+
 # ── config ────────────────────────────────────────────────────────────────────
 
 load_dotenv()
@@ -44,7 +47,13 @@ _raw_admins = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS: List[int] = [int(x) for x in _raw_admins.split(",") if x.strip().isdigit()]
 
 _raw_channels = os.getenv("PARSER_CHANNELS", "")
-PARSER_CHANNELS: List[str] = [ch.strip() for ch in _raw_channels.split(",") if ch.strip()]
+PARSER_CHANNELS: List[str] = []
+for _channel in _raw_channels.split(","):
+    if _channel.strip():
+        try:
+            PARSER_CHANNELS.append(normalize_channel(_channel))
+        except ValueError:
+            pass
 
 # ── logging ───────────────────────────────────────────────────────────────────
 
@@ -66,8 +75,6 @@ def _validate_config() -> None:
         errors.append("BOT_TOKEN не задан в .env")
     if not OPENROUTER_API_KEY:
         errors.append("OPENROUTER_API_KEY не задан в .env")
-    if not PARSER_CHANNELS:
-        errors.append("PARSER_CHANNELS не задан в .env")
     if not ADMIN_IDS:
         errors.append("ADMIN_IDS не задан в .env (парсер требует админов для проверки)")
     if errors:
@@ -641,15 +648,16 @@ async def process_message(
 
 async def main() -> None:
     _validate_config()
+    database.init_db()
     _init_parser_table()
+    database.init_parser_channels(PARSER_CHANNELS)
 
     logger.info("═══════════════════════════════════════════════════════════")
-    logger.info("  Channel Parser v1.0")
-    logger.info("  Каналов: %d | Модель: %s", len(PARSER_CHANNELS), OPENROUTER_MODEL)
+    logger.info("  Channel Parser v1.1")
+    logger.info("  Каналов в env: %d | Модель: %s", len(PARSER_CHANNELS), OPENROUTER_MODEL)
     logger.info("  Админы: %s", ADMIN_IDS)
     logger.info("═══════════════════════════════════════════════════════════")
 
-    # Telethon клиент — StringSession (Railway) или файловая сессия (локально)
     if TELETHON_SESSION:
         session = StringSession(TELETHON_SESSION)
         logger.info("Используется StringSession из переменной окружения")
@@ -663,41 +671,72 @@ async def main() -> None:
     me = await client.get_me()
     logger.info("✅ Telethon подключён как: %s (id=%d)", me.first_name, me.id)
 
-    # Резолв каналов
-    channel_ids = set()
-    for ch in PARSER_CHANNELS:
-        try:
-            entity = await client.get_entity(ch)
-            channel_ids.add(entity.id)
-            title = getattr(entity, "title", ch)
-            logger.info("  📢 %s → id=%d (%s)", ch, entity.id, title)
-        except Exception as exc:
-            logger.error("  ❌ Канал не найден %s: %s", ch, exc)
-
-    if not channel_ids:
-        logger.error(
-            "❌ Ни один канал не найден. "
-            "Проверьте PARSER_CHANNELS и подписки аккаунта."
-        )
-        await client.disconnect()
-        return
-
-    logger.info("🎧 Слушаю %d каналов...\n", len(channel_ids))
-
-    # HTTP клиент для OpenRouter + Bot API
     http_client = httpx.AsyncClient()
+    active_channels = {}
+    listener_builder = None
 
-    # Обработчик новых сообщений
-    @client.on(events.NewMessage(chats=list(channel_ids)))
+    async def resolve_channels(usernames: List[str]) -> tuple[dict, List[str]]:
+        resolved = {}
+        failed = []
+        for username in usernames:
+            try:
+                entity = await client.get_entity(username)
+                resolved[username] = entity.id
+            except Exception as exc:
+                failed.append(username)
+                logger.error("  ❌ Не удалось получить канал %s: %s", username, exc)
+        return resolved, failed
+
     async def handler(event: events.NewMessage.Event):
         try:
             await process_message(event, client, http_client)
         except Exception as exc:
             logger.exception("Ошибка обработки сообщения: %s", exc)
 
-    # Работать до отключения
+    async def refresh_channels() -> None:
+        nonlocal active_channels, listener_builder
+        usernames = database.get_parser_channels()
+        resolved, failed = await resolve_channels(usernames)
+        # Keep already active channels during transient Telegram/API failures.
+        new_active = {
+            username: resolved.get(username, active_channels[username])
+            for username in usernames
+            if username in resolved or username in active_channels
+        }
+        new_ids = set(new_active.values())
+        old_ids = set(active_channels.values())
+        if new_ids == old_ids:
+            active_channels = new_active
+            if failed:
+                logger.warning("⏳ Сохраняю %d каналов до повторной попытки: %s", len(failed), ", ".join(failed))
+            return
+        if listener_builder is not None:
+            client.remove_event_handler(handler, listener_builder)
+        active_channels = new_active
+        if new_ids:
+            listener_builder = events.NewMessage(chats=list(new_ids))
+            client.add_event_handler(handler, listener_builder)
+            logger.info("🎧 Слушаю %d каналов: %s", len(new_ids), ", ".join(f"@{name}" for name in active_channels))
+        else:
+            listener_builder = None
+            logger.warning("📭 Каналов для парсинга нет — ожидаю добавления из бота")
+
+    async def channel_refresh_loop() -> None:
+        while True:
+            try:
+                await refresh_channels()
+            except Exception:
+                logger.exception("Ошибка обновления списка каналов")
+            await asyncio.sleep(30)
+
     try:
-        await client.run_until_disconnected()
+        await refresh_channels()
+        refresh_task = asyncio.create_task(channel_refresh_loop())
+        try:
+            await client.run_until_disconnected()
+        finally:
+            refresh_task.cancel()
+            await asyncio.gather(refresh_task, return_exceptions=True)
     finally:
         await http_client.aclose()
         logger.info("Parser остановлен.")
