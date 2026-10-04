@@ -22,6 +22,7 @@ from telegram.ext import (
 
 import config
 import database
+from parser_channels import normalize_channel
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,6 +53,11 @@ SKIP = ("нет", "-", "no", "пропустить", "skip", ".")
 
 def is_admin(user_id: int) -> bool:
     return not config.ADMIN_IDS or user_id in config.ADMIN_IDS
+
+
+def is_parser_admin(user_id: int) -> bool:
+    """Parser channel management fails closed if admins are not configured."""
+    return bool(config.ADMIN_IDS) and user_id in config.ADMIN_IDS
 
 
 def e(text: str) -> str:
@@ -1111,7 +1117,8 @@ async def cmd_help(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         "После записи на мероприятие бот напомнит за день и за 2 часа до начала.\n"
     )
     if admin:
-        text += "\n🔧 <b>Управление</b> — редактирование и удаление мероприятий"
+        text += ("\n🔧 <b>Управление</b> — редактирование и удаление мероприятий"
+                    "\n📡 <b>Парсер:</b> /parser_channels, /parser_add, /parser_remove")
     else:
         text += "\nПри добавлении мероприятие сначала проходит проверку у администратора."
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb_main_menu(admin))
@@ -1123,6 +1130,52 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     await _send_digest(context)
     await update.message.reply_text("✅ Дайджест отправлен в канал.")
+
+
+# ── parser channel management ────────────────────────────────────────────────
+
+async def cmd_parser_channels(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_parser_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет доступа. Настройте ADMIN_IDS.")
+        return
+    channels = database.get_parser_channels()
+    if not channels:
+        await update.message.reply_text("📭 Каналы для парсинга не добавлены.")
+        return
+    text = "📡 <b>Каналы парсера:</b>\n\n" + "\n".join(
+        f"• @{e(channel)}" for channel in channels
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def cmd_parser_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_parser_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет доступа. Настройте ADMIN_IDS.")
+        return
+    try:
+        username = normalize_channel(" ".join(context.args))
+    except ValueError as exc:
+        await update.message.reply_text(f"⚠️ {e(exc)}\nПример: /parser_add @hse_events")
+        return
+    if database.add_parser_channel(username):
+        await update.message.reply_text(f"✅ Канал @{e(username)} добавлен в парсер.", parse_mode="HTML")
+    else:
+        await update.message.reply_text(f"ℹ️ Канал @{e(username)} уже был добавлен.", parse_mode="HTML")
+
+
+async def cmd_parser_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_parser_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет доступа. Настройте ADMIN_IDS.")
+        return
+    try:
+        username = normalize_channel(" ".join(context.args))
+    except ValueError as exc:
+        await update.message.reply_text(f"⚠️ {e(exc)}\nПример: /parser_remove @hse_events")
+        return
+    if database.remove_parser_channel(username):
+        await update.message.reply_text(f"✅ Канал @{e(username)} удалён из парсера.", parse_mode="HTML")
+    else:
+        await update.message.reply_text(f"ℹ️ Канал @{e(username)} не найден в списке.", parse_mode="HTML")
 
 
 # ── admin command & callback ──────────────────────────────────────────────────
@@ -1513,6 +1566,9 @@ def main() -> None:
     app.add_handler(CommandHandler("events",    cmd_events))
     app.add_handler(CommandHandler("digest",    cmd_digest))
     app.add_handler(CommandHandler("admin",     cmd_admin))
+    app.add_handler(CommandHandler("parser_channels", cmd_parser_channels))
+    app.add_handler(CommandHandler("parser_add",     cmd_parser_add))
+    app.add_handler(CommandHandler("parser_remove",  cmd_parser_remove))
     app.add_handler(CommandHandler("interests", cmd_interests))
     app.add_handler(edit_conv)
     app.add_handler(add_conv)

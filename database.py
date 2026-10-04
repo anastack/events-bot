@@ -186,10 +186,102 @@ def init_db() -> None:
                 )
             """)
 
+    _ensure_parser_channels_table()
+
     logger.info(
         "DB ready. Backend: %s",
         f"PostgreSQL ({_DATABASE_URL[:30]}...)" if _USE_PG else f"SQLite ({DB_PATH})",
     )
+
+
+# ── parser channels ────────────────────────────────────────────────────────────
+
+def _ensure_parser_channels_table() -> None:
+    with _conn() as c:
+        if _USE_PG:
+            c.cursor().execute("""
+                CREATE TABLE IF NOT EXISTS parser_channels (
+                    username   TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            c.cursor().execute("""
+                CREATE TABLE IF NOT EXISTS parser_channels_meta (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+        else:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS parser_channels (
+                    username   TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS parser_channels_meta (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+
+
+def init_parser_channels(seed_channels: Optional[List[str]] = None) -> None:
+    """Create the registry and import env defaults only on its first initialization."""
+    _ensure_parser_channels_table()
+    with _conn() as c:
+        if _USE_PG:
+            cur = c.cursor()
+            cur.execute("SELECT 1 FROM parser_channels_meta WHERE key = %s", ("env_seeded",))
+            already_seeded = cur.fetchone() is not None
+            if not already_seeded:
+                for username in seed_channels or []:
+                    cur.execute(
+                        "INSERT INTO parser_channels (username, created_at) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (username, datetime.now().isoformat()),
+                    )
+                cur.execute("INSERT INTO parser_channels_meta (key, value) VALUES (%s, %s)", ("env_seeded", "1"))
+        else:
+            already_seeded = c.execute(
+                "SELECT 1 FROM parser_channels_meta WHERE key = ?", ("env_seeded",)
+            ).fetchone() is not None
+            if not already_seeded:
+                for username in seed_channels or []:
+                    c.execute(
+                        "INSERT OR IGNORE INTO parser_channels (username, created_at) VALUES (?, ?)",
+                        (username, datetime.now().isoformat()),
+                    )
+                c.execute("INSERT INTO parser_channels_meta (key, value) VALUES (?, ?)", ("env_seeded", "1"))
+
+
+def get_parser_channels() -> List[str]:
+    return [row[0] for row in _fetch("SELECT username FROM parser_channels ORDER BY username")]
+
+
+def add_parser_channel(username: str) -> bool:
+    with _conn() as c:
+        if _USE_PG:
+            cur = c.cursor()
+            cur.execute(
+                "INSERT INTO parser_channels (username, created_at) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING username",
+                (username, datetime.now().isoformat()),
+            )
+            return cur.fetchone() is not None
+        cur = c.execute(
+            "INSERT OR IGNORE INTO parser_channels (username, created_at) VALUES (?, ?)",
+            (username, datetime.now().isoformat()),
+        )
+        return cur.rowcount > 0
+
+
+def remove_parser_channel(username: str) -> bool:
+    with _conn() as c:
+        if _USE_PG:
+            cur = c.cursor()
+            cur.execute("DELETE FROM parser_channels WHERE username = %s RETURNING username", (username,))
+            return cur.fetchone() is not None
+        cur = c.execute("DELETE FROM parser_channels WHERE username = ?", (username,))
+        return cur.rowcount > 0
 
 
 # ── write ─────────────────────────────────────────────────────────────────────
