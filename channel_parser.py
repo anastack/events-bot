@@ -699,7 +699,7 @@ async def main() -> None:
         resolved, failed = await resolve_channels(usernames)
         # Keep already active channels during transient Telegram/API failures.
         new_active = {
-            username: resolved.get(username, active_channels[username])
+            username: resolved[username] if username in resolved else active_channels[username]
             for username in usernames
             if username in resolved or username in active_channels
         }
