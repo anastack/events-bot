@@ -161,6 +161,7 @@ function poster(event) {
     const image = element("img");
     image.src = event.photo;
     image.alt = "";
+    image.referrerPolicy = "no-referrer";
     image.loading = "lazy";
     image.addEventListener("error", () => image.remove(), { once: true });
     cover.append(image);
