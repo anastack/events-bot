@@ -17,6 +17,7 @@ MOSCOW = ZoneInfo("Europe/Moscow")
 HSE = "https://www.hse.ru/announcements/moscow/"
 WINZAVOD = "https://www.winzavod.ru/calendar/"
 GES = "https://ges-2.org/calendar"
+MUSIC_HOUSE = "https://www.mmdm.ru/afisha/"
 MONTHS = "января февраля марта апреля мая июня июля августа сентября октября ноября декабря".split()
 DATE = re.compile(r"(\d{1,2}) (" + "|".join(MONTHS) + r")(?: (\d{4}))?")
 CLOCK = re.compile(r"\b[0-2]\d:[0-5]\d\b")
@@ -156,7 +157,31 @@ def ges_events(today):
                         link, kind, "Культура", photo)
 
 
-SOURCES = {"ВШЭ": hse_events, "Винзавод": winzavod_events, "ГЭС-2": ges_events}
+def music_house_events(today):
+    for card in page(MUSIC_HOUSE).select(".event_grid_item"):
+        anchor = card.select_one("a.egi_title[href]")
+        title = text(anchor)
+        link = secure_url(MUSIC_HOUSE, anchor["href"]) if anchor else None
+        label = text(card.select_one(".egi_datetime"))
+        matches = date_matches(label)
+        if not title or not link or len(matches) != 1:
+            continue
+        day = date_from(matches[0], today.year)
+        clock = CLOCK.search(label)
+        image = card.select_one(".egi_image_contener img[src]")
+        photo = secure_url(MUSIC_HOUSE, image["src"]) if image else None
+        hall = text(card.select_one(".egi_hall"))
+        location = f"Дом музыки · {hall}" if hall else "Московский международный Дом музыки"
+        yield Event(title, day, day, date_text(day) + (", " + clock[0] if clock else ""),
+                    location, link, "Концерт", "Музыка", photo)
+
+
+SOURCES = {
+    "ВШЭ": hse_events,
+    "Винзавод": winzavod_events,
+    "ГЭС-2": ges_events,
+    "Дом музыки": music_house_events,
+}
 
 
 def title_key(title):

@@ -12,6 +12,10 @@ const toast = document.querySelector("#toast");
 let events = [];
 let saved = new Set();
 let authenticated = false;
+let policy = "discovery_v2";
+let listVersion = 0;
+let pageObserver;
+const pageSize = 16;
 let surface = "discover";
 let topic = "";
 let observer;
@@ -54,7 +58,7 @@ function notify(message) {
 async function flush() {
   if (!queue.length || sending) return;
   sending = true;
-  const batch = queue.slice(0, 30);
+  const batch = queue.slice(0, 12);
   let retry = true;
   try {
     const response = await fetch("/api/actions", {
@@ -99,6 +103,7 @@ function track(exposure, kind, extra = {}, onResult) {
     occurred_at: new Date().toISOString(),
     position: exposure.position,
     surface: exposure.surface,
+    policy: exposure.policy,
     ...extra,
   });
   void flush();
@@ -128,6 +133,7 @@ function stopWatching() {
 
 function watch() {
   observer?.disconnect();
+  observer = null;
   if (document.hidden || activeDialog || !authenticated) return;
   observer = new IntersectionObserver((entries) => {
     for (const entry of entries) {
@@ -264,21 +270,78 @@ function card(exposure, featured) {
   return node;
 }
 
-function render() {
-  stopWatching();
+function matchingEvents() {
   const query = search.value.trim().toLocaleLowerCase("ru");
-  const filtered = events.filter(event =>
+  return events.filter(event =>
     (surface !== "saved" || saved.has(event.id)) &&
     (!topic || event.topic === topic) &&
     (!query || [event.name, event.location, event.topic, event.type].join(" ").toLocaleLowerCase("ru").includes(query))
   );
-  const candidates = filtered.map(event => event.id);
-  exposures = filtered.map((event, position) => ({ event, position, surface, candidates }));
+}
+
+async function getFeed() {
+  const response = await fetch("/api/feed?session=" + sessionId, { headers });
+  if (!response.ok) {
+    throw new Error(response.status === 401 ? "Открой афишу заново в Telegram." : "Не удалось загрузить афишу.");
+  }
+  return response.json();
+}
+
+function render() {
+  stopWatching();
+  pageObserver?.disconnect();
+  pageObserver = null;
+  const version = ++listVersion;
+  exposures = [];
+  const initial = matchingEvents();
+  if (!initial.length) {
+    feed.replaceChildren(element("p", "empty", search.value.trim() || topic ? "По этому запросу ничего не нашлось." :
+      surface === "saved" ? "Здесь будут мероприятия, которые ты сохранишь." : "Ближайших анонсов пока нет."));
+    return;
+  }
+
   const grid = element("div", "grid");
-  exposures.forEach((exposure, index) => grid.append(card(exposure, index === 0 && surface === "discover")));
-  if (exposures.length) feed.replaceChildren(grid);
-  else feed.replaceChildren(element("p", "empty", query || topic ? "По этому запросу ничего не нашлось." :
-    surface === "saved" ? "Здесь будут мероприятия, которые ты сохранишь." : "Ближайших анонсов пока нет."));
+  const shown = new Set();
+  const more = button("chip load-more", "Показать ещё", async () => {
+    if (more.disabled) return;
+    more.disabled = true;
+    pageObserver?.disconnect();
+    if (authenticated && surface === "discover") {
+      try {
+        const data = await getFeed();
+        if (version !== listVersion) return;
+        events = data.events;
+        policy = data.policy;
+      } catch {
+        // The existing list still works if refreshing the order fails.
+      }
+    }
+    if (version !== listVersion) return;
+    appendPage(matchingEvents());
+    more.disabled = false;
+  });
+  const appendPage = (filtered) => {
+    const remaining = filtered.filter(event => !shown.has(event.id));
+    const candidates = [...shown, ...remaining.map(event => event.id)].slice(0, 360);
+    for (const event of remaining.slice(0, pageSize)) {
+      const exposure = { event, position: exposures.length, surface, candidates, policy };
+      if (exposure.position >= 360) break;
+      shown.add(event.id);
+      exposures.push(exposure);
+      const node = card(exposure, exposure.position === 0 && surface === "discover");
+      grid.append(node);
+      if (!document.hidden && !activeDialog && authenticated) observer?.observe(node);
+    }
+    more.hidden = remaining.length <= pageSize || exposures.length >= 360;
+    if (!more.hidden && pageObserver) pageObserver.observe(more);
+  };
+  feed.replaceChildren(grid, more);
+  if (typeof IntersectionObserver === "function" && surface === "discover") {
+    pageObserver = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) more.click();
+    }, { rootMargin: "180px" });
+  }
+  appendPage(initial);
   watch();
 }
 
@@ -298,9 +361,8 @@ function renderFilters() {
 async function load() {
   feed.setAttribute("aria-busy", "true");
   try {
-    const response = await fetch("/api/feed", { headers });
-    if (!response.ok) throw new Error(response.status === 401 ? "Открой афишу заново в Telegram." : "Не удалось загрузить афишу.");
-    const data = await response.json();
+    const data = await getFeed();
+    policy = data.policy;
     events = data.events;
     saved = new Set(data.saved);
     authenticated = data.authenticated;

@@ -72,6 +72,7 @@ dialog .poster { aspect-ratio: 2; }
 .description { white-space: pre-wrap; }
 .cta { display: block; text-align: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: transparent; font-weight: 760; text-decoration: none; }
 .cta.primary { background: var(--brand-gradient); color: #fff; border-color: var(--brand); }
+.load-more { display: block; margin: 20px auto 0; padding-inline: 20px; }
 .empty { padding: 25px 8px; color: var(--muted); }
 .empty button { margin-top: 10px; }
 #toast { position: fixed; z-index: 5; bottom: calc(72px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); max-width: calc(100% - 28px); background: #f7f5fa; color: #17151c; border-radius: 11px; padding: 9px 14px; font-size: .83rem; box-shadow: 0 8px 24px #0005; }
