@@ -9,6 +9,7 @@ load_dotenv()
 
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 CHANNEL_ID: str = os.getenv("CHANNEL_ID", "")
+MINIAPP_URL = os.getenv("MINIAPP_URL", "").strip()
 TIMEZONE = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow"))
 DIGEST_HOUR: int = int(os.getenv("DIGEST_HOUR", "10"))
 DIGEST_MINUTE: int = int(os.getenv("DIGEST_MINUTE", "0"))

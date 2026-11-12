@@ -6,8 +6,10 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    MenuButtonWebApp,
     ReplyKeyboardMarkup,
     Update,
+    WebAppInfo,
 )
 from telegram.ext import (
     Application,
@@ -788,6 +790,13 @@ async def _publish_event_to_channel(
 
 # ── event browsing ────────────────────────────────────────────────────────────
 
+async def cmd_afisha(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat.type != "private" or not config.MINIAPP_URL.startswith("https://"):
+        return
+    button = InlineKeyboardButton("Открыть афишу", web_app=WebAppInfo(config.MINIAPP_URL))
+    await update.message.reply_text("Афиша CUDA IDTI", reply_markup=InlineKeyboardMarkup([[button]]))
+
+
 async def cmd_events(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     events = database.get_all_approved_events()
     if not events:
@@ -1496,6 +1505,13 @@ async def _on_startup(app) -> None:
         logger.info("Webhook удалён, pending updates сброшены")
     except Exception:
         logger.exception("Не удалось удалить webhook")
+    if config.MINIAPP_URL.startswith("https://"):
+        try:
+            await app.bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="Афиша", web_app=WebAppInfo(config.MINIAPP_URL))
+            )
+        except Exception:
+            logger.exception("Не удалось установить кнопку афиши")
     for admin_id in config.ADMIN_IDS:
         try:
             await app.bot.send_message(chat_id=admin_id, text="✅ Бот запущен и готов к работе.")
@@ -1564,6 +1580,7 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("events",    cmd_events))
+    app.add_handler(CommandHandler("afisha",    cmd_afisha))
     app.add_handler(CommandHandler("digest",    cmd_digest))
     app.add_handler(CommandHandler("admin",     cmd_admin))
     app.add_handler(CommandHandler("parser_channels", cmd_parser_channels))
