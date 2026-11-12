@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -21,14 +23,17 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 import database
+from catalog_sources import init_catalog, refresh
 
 STATIC = Path(__file__).with_name("miniapp_static")
 MOSCOW = ZoneInfo("Europe/Moscow")
+logger = logging.getLogger("uvicorn.error")
 
 
 def init_pilot():
     with database._conn() as connection:
         cursor = connection.cursor()
+        init_catalog(cursor)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS miniapp_saves (
                 user_key TEXT NOT NULL,
@@ -55,10 +60,25 @@ def init_pilot():
         """)
 
 
+async def sync_catalog():
+    while True:
+        try:
+            await asyncio.to_thread(refresh)
+        except Exception:
+            logger.exception("Ошибка обновления внешней афиши")
+        await asyncio.sleep(6 * 60 * 60)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     init_pilot()
-    yield
+    task = asyncio.create_task(sync_catalog()) if database._USE_PG else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -125,20 +145,22 @@ def feed(response: Response, user_key=Depends(viewer)):
     today = datetime.now(MOSCOW).date()
     rows = database._fetch(
         """SELECT id, name, date_display, date_sort, location, link, description,
-                  photo_file_id, event_type, topic
-           FROM events WHERE status = 'approved' AND date_sort BETWEEN ? AND ?
-           ORDER BY date_sort, id LIMIT 120""",
+                  photo_file_id, event_type, topic, status
+           FROM events WHERE status IN ('approved', 'miniapp_catalog') AND date_sort BETWEEN ? AND ?
+           ORDER BY CASE WHEN status = 'approved' THEN 0 ELSE 1 END, date_sort, id LIMIT 120""",
         (today.isoformat(), (today + timedelta(days=60)).isoformat()),
     )
     saved = database._fetch("SELECT event_id FROM miniapp_saves WHERE user_key = ?", (user_key,)) if user_key else []
     events = []
-    for event_id, name, date_display, date_sort, location, link, description, photo, kind, topic in rows:
+    for event_id, name, date_display, date_sort, location, link, description, photo, kind, topic, status in rows:
+        image = external_link(photo) if status == "miniapp_catalog" else (f"/api/photo/{event_id}" if photo else None)
         events.append({
             "id": event_id, "name": name, "date_display": date_display,
             "date_sort": date_sort, "location": location, "link": external_link(link),
-            "description": description, "photo": f"/api/photo/{event_id}" if photo else None,
+            "description": description, "photo": image,
             "type": kind, "topic": topic,
         })
+    events.sort(key=lambda event: event["date_sort"])
     return {"events": events, "saved": [row[0] for row in saved], "authenticated": user_key is not None}
 
 
@@ -204,7 +226,7 @@ def record(actions: list[Action], user_key=Depends(signed_viewer)):
             def execute(query, params):
                 return cursor.execute(database._ph(query), params)
 
-            execute("SELECT 1 FROM events WHERE id = ? AND status = 'approved'", (action.event_id,))
+            execute("SELECT 1 FROM events WHERE id = ? AND status IN ('approved', 'miniapp_catalog')", (action.event_id,))
             if not cursor.fetchone():
                 continue
             if action.kind != "impression":
