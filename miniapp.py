@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -21,14 +23,19 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 import database
+from catalog_sources import init_catalog, refresh
+from feed_recommender import rank, train_from_logs
 
 STATIC = Path(__file__).with_name("miniapp_static")
 MOSCOW = ZoneInfo("Europe/Moscow")
+logger = logging.getLogger("uvicorn.error")
+FEED_LIMIT = 360
 
 
 def init_pilot():
     with database._conn() as connection:
         cursor = connection.cursor()
+        init_catalog(cursor)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS miniapp_saves (
                 user_key TEXT NOT NULL,
@@ -53,12 +60,45 @@ def init_pilot():
                 policy TEXT NOT NULL
             )
         """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS miniapp_actions_user_recent
+            ON miniapp_actions (user_key, received_at)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS miniapp_actions_received
+            ON miniapp_actions (received_at)
+        """)
+
+
+async def sync_catalog():
+    while True:
+        try:
+            await asyncio.to_thread(refresh)
+        except Exception:
+            logger.exception("Ошибка обновления внешней афиши")
+        await asyncio.sleep(6 * 60 * 60)
+
+
+async def sync_model():
+    while True:
+        try:
+            result = await asyncio.to_thread(train_from_logs)
+            logger.info("Рекомендации: %s", result)
+        except Exception:
+            logger.exception("Ошибка обучения рекомендаций")
+        await asyncio.sleep(60 * 60)
 
 
 @asynccontextmanager
 async def lifespan(_app):
     init_pilot()
-    yield
+    jobs = [asyncio.create_task(job()) for job in (sync_catalog, sync_model)] if database._USE_PG else []
+    try:
+        yield
+    finally:
+        for job in jobs:
+            job.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -120,26 +160,30 @@ def health():
 
 
 @app.get("/api/feed")
-def feed(response: Response, user_key=Depends(viewer)):
+def feed(response: Response, session: UUID | None = None, user_key=Depends(viewer)):
     response.headers["Cache-Control"] = "no-store"
     today = datetime.now(MOSCOW).date()
     rows = database._fetch(
         """SELECT id, name, date_display, date_sort, location, link, description,
-                  photo_file_id, event_type, topic
-           FROM events WHERE status = 'approved' AND date_sort BETWEEN ? AND ?
-           ORDER BY date_sort, id LIMIT 120""",
-        (today.isoformat(), (today + timedelta(days=60)).isoformat()),
+                  photo_file_id, event_type, topic, status
+           FROM events WHERE status IN ('approved', 'miniapp_catalog') AND date_sort BETWEEN ? AND ?
+           ORDER BY CASE WHEN status = 'approved' THEN 0 ELSE 1 END, date_sort, id LIMIT ?""",
+        (today.isoformat(), (today + timedelta(days=60)).isoformat(), FEED_LIMIT),
     )
     saved = database._fetch("SELECT event_id FROM miniapp_saves WHERE user_key = ?", (user_key,)) if user_key else []
     events = []
-    for event_id, name, date_display, date_sort, location, link, description, photo, kind, topic in rows:
+    for event_id, name, date_display, date_sort, location, link, description, photo, kind, topic, status in rows:
+        image = external_link(photo) if status == "miniapp_catalog" else (f"/api/photo/{event_id}" if photo else None)
         events.append({
             "id": event_id, "name": name, "date_display": date_display,
             "date_sort": date_sort, "location": location, "link": external_link(link),
-            "description": description, "photo": f"/api/photo/{event_id}" if photo else None,
+            "description": description, "photo": image,
             "type": kind, "topic": topic,
         })
-    return {"events": events, "saved": [row[0] for row in saved], "authenticated": user_key is not None}
+    events.sort(key=lambda event: event["date_sort"])
+    events, policy = rank(events, user_key, str(session) if session else None)
+    return {"events": events, "saved": [row[0] for row in saved],
+            "authenticated": user_key is not None, "policy": policy}
 
 
 @lru_cache(maxsize=12)
@@ -184,9 +228,10 @@ class Action(BaseModel):
     kind: Literal["impression", "open", "view_end", "save", "unsave", "outbound_click"]
     occurred_at: datetime
     surface: Literal["discover", "saved"]
-    position: int = Field(ge=0, lt=120)
+    position: int = Field(ge=0, lt=FEED_LIMIT)
     dwell_ms: int | None = Field(default=None, ge=0, le=3_600_000)
-    candidate_ids: list[int] | None = Field(default=None, max_length=120)
+    candidate_ids: list[int] | None = Field(default=None, max_length=FEED_LIMIT)
+    policy: Literal["date_v1", "discovery_v2", "behavior_v1", "two_tower_v1"] = "date_v1"
 
 
 @app.post("/api/actions")
@@ -204,7 +249,7 @@ def record(actions: list[Action], user_key=Depends(signed_viewer)):
             def execute(query, params):
                 return cursor.execute(database._ph(query), params)
 
-            execute("SELECT 1 FROM events WHERE id = ? AND status = 'approved'", (action.event_id,))
+            execute("SELECT 1 FROM events WHERE id = ? AND status IN ('approved', 'miniapp_catalog')", (action.event_id,))
             if not cursor.fetchone():
                 continue
             if action.kind != "impression":
@@ -227,7 +272,7 @@ def record(actions: list[Action], user_key=Depends(signed_viewer)):
                 (str(action.action_id), user_key, str(action.session_id), str(action.impression_id),
                  action.event_id, action.kind, action.occurred_at.astimezone(timezone.utc).isoformat(),
                  now, action.surface, action.position, action.dwell_ms,
-                 json.dumps(action.candidate_ids) if action.kind == "impression" else None, "date_v1"),
+                 json.dumps(action.candidate_ids) if action.kind == "impression" else None, action.policy),
             )
             accepted.append(str(action.action_id))
             if not cursor.rowcount:
