@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor
@@ -38,15 +39,12 @@ def clean_text(node):
 
 
 @lru_cache(maxsize=512)
-def source_description(url, cache_period):
+def cached_description(url, cache_period):
     if not allowed_source(url):
         return ""
     request = Request(url, headers={"User-Agent": "CUDA-IDTI Calendar Reader/1.0"})
-    try:
-        with build_opener(SourceRedirect()).open(request, timeout=7) as response:
-            soup = BeautifulSoup(response.read(2_000_000), "html.parser")
-    except (OSError, ValueError):
-        return ""
+    with build_opener(SourceRedirect()).open(request, timeout=10) as response:
+        soup = BeautifulSoup(response.read(2_000_000), "html.parser")
 
     host = urlsplit(url).hostname
     selectors = {
@@ -90,7 +88,15 @@ def source_description(url, cache_period):
         value = (node.get("content") or "").strip() if node else ""
         if len(value) >= 60:
             return clean_text(BeautifulSoup(value, "html.parser"))
-    return ""
+    raise ValueError("Source description unavailable")
+
+
+def source_description(url, cache_period):
+    try:
+        return cached_description(url, cache_period)
+    except (OSError, ValueError):
+        logging.getLogger("uvicorn.error").warning("Описание недоступно: %s", urlsplit(url).hostname)
+        return ""
 
 
 def description_for(event_id):
