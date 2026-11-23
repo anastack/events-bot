@@ -243,7 +243,9 @@ def refresh():
                 ON CONFLICT (link) WHERE status = 'miniapp_catalog' DO UPDATE SET
                     name = excluded.name, date_display = excluded.date_display,
                     date_sort = excluded.date_sort, location = excluded.location,
-                    description = excluded.description, photo_file_id = excluded.photo_file_id,
+                    description = CASE WHEN length(events.description) >= 100
+                                       THEN events.description ELSE excluded.description END,
+                    photo_file_id = excluded.photo_file_id,
                     event_type = excluded.event_type, topic = excluded.topic
             """), (event.title, event.display, day, event.location, event.link, event.description,
                    event.photo, datetime.now(MOSCOW).isoformat(), event.kind, event.topic))

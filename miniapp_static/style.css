@@ -82,3 +82,13 @@ dialog .poster { aspect-ratio: 2; }
   .event.featured { grid-column: span 2; }
   .featured .poster { aspect-ratio: 2.2; }
 }
+
+
+.related { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 18px; }
+.related h3 { margin: 0 0 14px; font-size: 1.15rem; line-height: 1.25; }
+.related-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.related-grid .poster { aspect-ratio: 1.3; padding: 12px; }
+.related-grid .event-name { font-size: .85rem; }
+.related-grid .event-info { padding: 10px; }
+.related-grid .heart { color: #fff; }
+.related-grid .heart[aria-pressed="true"] { color: var(--accent); }

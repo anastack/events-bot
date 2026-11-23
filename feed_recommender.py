@@ -57,7 +57,7 @@ def rank(events, user_key, session):
         rows = database._fetch("""
             SELECT a.kind, a.dwell_ms, a.session_id, e.event_type, e.topic, e.link, e.location
             FROM miniapp_actions a JOIN events e ON e.id = a.event_id
-            WHERE a.user_key = ? AND a.surface = 'discover' AND a.kind != 'impression'
+            WHERE a.user_key = ? AND a.surface IN ('discover', 'related') AND a.kind != 'impression'
             ORDER BY a.received_at DESC, a.occurred_at DESC, a.action_id DESC LIMIT 48
         """, (user_key,))
         history = [(item_vector(kind, topic, link, location), reaction(action, dwell), sid)
@@ -169,9 +169,9 @@ def train_from_logs():
     latest = (now - timedelta(minutes=30)).isoformat()
     rows = database._fetch("""
         SELECT a.user_key, a.session_id, a.impression_id, a.kind, a.dwell_ms, a.received_at,
-               e.event_type, e.topic, e.link, e.location
+               e.event_type, e.topic, e.link, e.location, a.surface
         FROM miniapp_actions a JOIN events e ON e.id = a.event_id
-        WHERE a.surface = 'discover' AND a.received_at BETWEEN ? AND ?
+        WHERE a.surface IN ('discover', 'related') AND a.received_at BETWEEN ? AND ?
         ORDER BY a.received_at DESC, a.occurred_at DESC,
                  CASE WHEN a.kind = 'impression' THEN 0 ELSE 1 END DESC, a.action_id DESC
         LIMIT 24000
@@ -182,11 +182,11 @@ def train_from_logs():
         return "ожидаем сохранения", len(saved)
     history = defaultdict(lambda: deque(maxlen=HISTORY))
     samples = []
-    for user, session, imp, action, dwell, timestamp, kind, topic, link, location in reversed(rows):
+    for user, session, imp, action, dwell, timestamp, kind, topic, link, location, surface in reversed(rows):
         item = item_vector(kind, topic, link, location)
         if action == "impression":
             profile = user_vector(history[user], session)
-            if np.any(profile):
+            if surface == "discover" and np.any(profile):
                 shown = datetime.fromisoformat(timestamp)
                 was_saved = imp in saved and shown <= saved[imp] <= shown + timedelta(minutes=30)
                 samples.append((profile, item, was_saved, timestamp, user))

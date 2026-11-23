@@ -24,7 +24,9 @@ from pydantic import BaseModel, Field
 load_dotenv()
 import database
 from catalog_sources import init_catalog, refresh
-from feed_recommender import rank, train_from_logs
+from feed_recommender import rank, train_from_logs, item_vector
+from event_details import description_for, enrich_catalog
+import numpy as np
 
 STATIC = Path(__file__).with_name("miniapp_static")
 MOSCOW = ZoneInfo("Europe/Moscow")
@@ -74,6 +76,8 @@ async def sync_catalog():
     while True:
         try:
             await asyncio.to_thread(refresh)
+            enriched = await asyncio.to_thread(enrich_catalog)
+            logger.info("Описания мероприятий: %d", enriched)
         except Exception:
             logger.exception("Ошибка обновления внешней афиши")
         await asyncio.sleep(6 * 60 * 60)
@@ -186,6 +190,35 @@ def feed(response: Response, session: UUID | None = None, user_key=Depends(viewe
             "authenticated": user_key is not None, "policy": policy}
 
 
+@app.get("/api/events/{event_id}/details")
+def event_details(event_id: int, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    description = description_for(event_id)
+    if description is None:
+        raise HTTPException(404)
+    return {"description": description}
+
+
+@app.get("/api/events/{event_id}/related")
+def related_events(event_id: int, response: Response, session: UUID | None = None, user_key=Depends(viewer)):
+    data = feed(response, session, user_key)
+    events = data["events"]
+    source = next((event for event in events if event["id"] == event_id), None)
+    if source is None:
+        raise HTTPException(404)
+    candidates = [event for event in events if event["id"] != event_id]
+    if not candidates:
+        return {"events": [], "policy": "related_v1"}
+    anchor = item_vector(source["type"], source["topic"], source["link"], source["location"])
+    vectors = np.stack([item_vector(event["type"], event["topic"], event["link"], event["location"])
+                        for event in candidates])
+    # Similarity to the open card has priority, personal feed order breaks close scores.
+    personal = np.linspace(1, 0, len(candidates))
+    scores = 0.8 * (vectors @ anchor) + 0.2 * personal
+    selected = np.argsort(-scores, kind="stable")[:6]
+    return {"events": [candidates[index] for index in selected], "policy": "related_v1"}
+
+
 @lru_cache(maxsize=12)
 def event_photo(file_id, token):
     api = f"https://api.telegram.org/bot{token}/getFile"
@@ -227,11 +260,11 @@ class Action(BaseModel):
     event_id: int = Field(gt=0)
     kind: Literal["impression", "open", "view_end", "save", "unsave", "outbound_click"]
     occurred_at: datetime
-    surface: Literal["discover", "saved"]
+    surface: Literal["discover", "saved", "related"]
     position: int = Field(ge=0, lt=FEED_LIMIT)
     dwell_ms: int | None = Field(default=None, ge=0, le=3_600_000)
     candidate_ids: list[int] | None = Field(default=None, max_length=FEED_LIMIT)
-    policy: Literal["date_v1", "discovery_v2", "behavior_v1", "two_tower_v1"] = "date_v1"
+    policy: Literal["date_v1", "discovery_v2", "behavior_v1", "two_tower_v1", "related_v1"] = "date_v1"
 
 
 @app.post("/api/actions")

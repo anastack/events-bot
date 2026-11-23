@@ -21,6 +21,9 @@ let topic = "";
 let observer;
 let exposures = [];
 let activeDialog;
+let relatedObserver;
+let relatedExposures = [];
+let openCardVersion = 0;
 let toastTimer;
 let sending = false;
 const queue = [];
@@ -216,12 +219,77 @@ function saveButton(exposure, inDetails = false) {
 function showDialog(dialog) {
   activeDialog = dialog;
   stopWatching();
-  dialog.showModal();
+  if (!dialog.open) dialog.showModal();
   tg?.BackButton?.show();
 }
 
+function stopRelated() {
+  relatedObserver?.disconnect();
+  relatedExposures.forEach(endExposure);
+  relatedExposures = [];
+}
+
+async function loadRelated(event, sheet, version) {
+  try {
+    const response = await fetch("/api/events/" + event.id + "/related?session=" + sessionId, { headers });
+    if (!response.ok) return;
+    const data = await response.json();
+    if (version !== openCardVersion || !details.open || !data.events.length) return;
+    const section = element("section", "related");
+    section.append(element("h3", "", "Вам также могут понравиться"));
+    const grid = element("div", "related-grid");
+    const candidates = data.events.map(item => item.id);
+    relatedExposures = data.events.map((item, position) => ({
+      event: item, position, surface: "related", policy: data.policy, candidates,
+    }));
+    relatedExposures.forEach(view => grid.append(card(view, false)));
+    section.append(grid);
+    sheet.append(section);
+    if (authenticated) {
+      relatedObserver = new IntersectionObserver(entries => {
+        for (const entry of entries) {
+          const view = relatedExposures.find(view => view.node === entry.target);
+          if (!view) continue;
+          if (entry.intersectionRatio >= .5 && !document.hidden) {
+            if (view.ended) { view.id = null; view.ended = false; }
+            clearTimeout(view.timer);
+            view.timer = setTimeout(() => {
+              if (details.open && !document.hidden) startExposure(view);
+            }, 500);
+          } else endExposure(view);
+        }
+      }, { root: details, threshold: .5 });
+      relatedExposures.forEach(view => relatedObserver.observe(view.node));
+    }
+  } catch {
+    // The event card remains available if related events cannot load.
+  }
+}
+
+async function loadDescription(event, paragraph, version) {
+  if ((event.description || "").length >= 100) return;
+  try {
+    const response = await fetch("/api/events/" + event.id + "/details");
+    if (!response.ok) return;
+    const data = await response.json();
+    if (version !== openCardVersion || !details.open) return;
+    if (data.description) {
+      event.description = data.description;
+      paragraph.textContent = data.description;
+    } else {
+      paragraph.textContent = "Подробности и условия участия — на странице организатора.";
+    }
+  } catch {
+    if (version === openCardVersion && !event.description) {
+      paragraph.textContent = "Подробности и условия участия — на странице организатора.";
+    }
+  }
+}
+
 function openEvent(exposure) {
+  const version = ++openCardVersion;
   startExposure(exposure);
+  stopRelated();
   track(exposure, "open");
   // A later rerender can reuse the card state; keep this impression for the sheet.
   const view = { ...exposure };
@@ -232,7 +300,8 @@ function openEvent(exposure) {
     element("h2", "", event.name),
     element("p", "event-meta", [event.date_display, event.location].filter(Boolean).join(" · ")),
   );
-  if (event.description) sheet.append(element("p", "description", event.description));
+  const description = element("p", "description", event.description || "Загружаем описание…");
+  sheet.append(description);
   if (event.link) {
     const link = element("a", "cta primary", "К организатору ↗");
     link.href = event.link;
@@ -252,6 +321,9 @@ function openEvent(exposure) {
   close.setAttribute("aria-label", "Закрыть");
   body.replaceChildren(close, poster(event), sheet);
   showDialog(details);
+  details.scrollTop = 0;
+  void loadDescription(event, description, version);
+  void loadRelated(event, sheet, version);
 }
 
 function card(exposure, featured) {
@@ -396,17 +468,30 @@ document.querySelector("#info-button").addEventListener("click", () => showDialo
 about.querySelector("[data-close]").addEventListener("click", () => about.close());
 [details, about].forEach(dialog => dialog.addEventListener("close", () => {
   activeDialog = null;
+  if (dialog === details) {
+    ++openCardVersion;
+    stopRelated();
+  }
   tg?.BackButton?.hide();
   if (surface === "saved") render();
   else watch();
 }));
 tg?.BackButton?.onClick(() => activeDialog?.close());
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopWatching();
-  else watch();
+  if (document.hidden) {
+    stopWatching();
+    relatedExposures.forEach(endExposure);
+  } else if (details.open) {
+    relatedExposures.forEach(view => {
+      if (view.ended) { view.id = null; view.ended = false; }
+      relatedObserver?.unobserve(view.node);
+      relatedObserver?.observe(view.node);
+    });
+  } else watch();
 });
 window.addEventListener("pagehide", () => {
   stopWatching();
+  stopRelated();
   void flush();
 });
 void load();
