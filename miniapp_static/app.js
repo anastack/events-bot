@@ -24,6 +24,7 @@ let activeDialog;
 let relatedObserver;
 let relatedExposures = [];
 let openCardVersion = 0;
+let reels;
 let toastTimer;
 let sending = false;
 const queue = [];
@@ -286,44 +287,178 @@ async function loadDescription(event, paragraph, version) {
   }
 }
 
-function openEvent(exposure) {
-  const version = ++openCardVersion;
-  startExposure(exposure);
+function stopReels() {
+  if (!reels) return;
+  reels.observer.disconnect();
+  if (reels.active?.exposure) endExposure(reels.active.exposure);
+  reels = null;
+  document.body.classList.remove("reels-open");
   stopRelated();
-  track(exposure, "open");
-  // A later rerender can reuse the card state; keep this impression for the sheet.
-  const view = { ...exposure };
-  const event = view.event;
-  const body = document.querySelector("#details-body");
-  const sheet = element("div", "sheet-text");
-  sheet.append(
+}
+
+async function waitForActions() {
+  const until = performance.now() + 1800;
+  void flush();
+  while ((queue.length || sending) && performance.now() < until) {
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+}
+
+function reelPage(state, event) {
+  const node = element("section", "reel");
+  node.setAttribute("aria-label", event?.name || "Следующая карточка");
+  const view = { node, event, exposure: null, loading: false };
+  state.pages.push(view);
+  state.container.append(node);
+  if (event) fillReel(state, view, event);
+  else node.append(element("p", "reel-loading", "Подбираем следующее событие…"));
+  state.observer.observe(node);
+  return view;
+}
+
+function fillReel(state, view, event) {
+  view.event = event;
+  view.node.setAttribute("aria-label", event.name);
+  const exposure = {
+    event, position: state.pages.indexOf(view), surface: "reels",
+    policy: state.policy, candidates: state.candidates,
+  };
+  view.exposure = exposure;
+  const copy = element("div", "sheet-text reel-copy");
+  copy.append(
     element("h2", "", event.name),
     element("p", "event-meta", [event.date_display, event.location].filter(Boolean).join(" · ")),
   );
-  const description = element("p", "description", event.description || "Загружаем описание…");
-  sheet.append(description);
+  const description = element("p", "description reel-description",
+    event.description || "Загружаем описание…");
+  const expand = button("reel-expand", "Подробнее", () => {
+    const expanded = description.classList.toggle("expanded");
+    expand.textContent = expanded ? "Свернуть" : "Подробнее";
+    expand.setAttribute("aria-expanded", String(expanded));
+    if (expanded) track(exposure, "open");
+  });
+  expand.setAttribute("aria-expanded", "false");
+  copy.append(description, expand);
+  const actions = element("div", "reel-actions");
+  actions.append(saveButton(exposure, true));
   if (event.link) {
-    const link = element("a", "cta primary", "К организатору ↗");
+    const link = element("a", "cta primary", "К организатору");
     link.href = event.link;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.addEventListener("click", (click) => {
-      track(view, "outbound_click");
+    link.addEventListener("click", click => {
+      track(exposure, "outbound_click");
       if (initData && tg?.openLink) {
         click.preventDefault();
         tg.openLink(event.link);
       }
     });
-    sheet.append(link);
+    actions.append(link);
   }
-  sheet.append(saveButton(view, true));
-  const close = button("close", "×", () => details.close());
-  close.setAttribute("aria-label", "Закрыть");
-  body.replaceChildren(close, poster(event), sheet);
+  copy.append(actions);
+  const similar = button("reel-expand", "Вам также могут понравиться", () => {
+    similar.disabled = true;
+    void loadRelated(event, copy, openCardVersion);
+  });
+  copy.append(similar);
+  const cover = poster(event);
+  cover.classList.add("reel-poster");
+  view.node.replaceChildren(cover, copy);
+  view.description = description;
+  view.copy = copy;
+}
+
+async function activateReel(state, view) {
+  if (reels !== state || state.active === view || document.hidden) return;
+  if (state.active?.exposure) endExposure(state.active.exposure);
+  stopRelated();
+  ++openCardVersion;
+  state.active = view;
+  state.previous.disabled = state.pages.indexOf(view) === 0;
+  if (!view.event) {
+    if (view.loading) return;
+    view.loading = true;
+    await waitForActions();
+    if (reels !== state || state.active !== view) { view.loading = false; return; }
+    try {
+      const data = await getFeed(AbortSignal.timeout(6500));
+      if (reels !== state || state.active !== view) { view.loading = false; return; }
+      events = data.events;
+      state.policy = data.policy;
+      state.candidates = events.map(event => event.id);
+    } catch {
+      if (reels !== state || state.active !== view) { view.loading = false; return; }
+    }
+    const event = events.find(event => !state.seen.has(event.id));
+    view.loading = false;
+    if (!event) {
+      view.node.replaceChildren(element("p", "reel-loading", "Ты посмотрела все доступные события."),
+        button("cta reel-end", "Вернуться к афише", () => details.close()));
+      state.next.disabled = true;
+      return;
+    }
+    state.seen.add(event.id);
+    fillReel(state, view, event);
+  }
+  if (reels !== state || state.active !== view) return;
+  state.next.disabled = false;
+  const exposure = view.exposure;
+  if (exposure.ended) { exposure.id = null; exposure.ended = false; }
+  startExposure(exposure);
+  void loadDescription(view.event, view.description, openCardVersion);
+  if (state.pages.at(-1) === view && state.pages.length < 360) reelPage(state, null);
+  else if (state.pages.length >= 360 && state.pages.at(-1) === view) state.next.disabled = true;
+}
+
+function moveReel(direction) {
+  if (!reels) return;
+  const index = reels.pages.indexOf(reels.active);
+  const target = reels.pages[index + direction];
+  target?.node.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openEvent(exposure) {
+  startExposure(exposure);
+  track(exposure, "open");
+  stopReels();
+  stopRelated();
+  ++openCardVersion;
+  const body = document.querySelector("#details-body");
+  const container = element("div", "reels");
+  container.tabIndex = 0;
+  container.setAttribute("aria-label", "Персональная лента мероприятий");
+  const previous = button("reel-nav", "↑", () => moveReel(-1));
+  const next = button("reel-nav", "↓", () => moveReel(1));
+  previous.setAttribute("aria-label", "Предыдущее мероприятие");
+  next.setAttribute("aria-label", "Следующее мероприятие");
+  const close = button("close reel-close", "×", () => details.close());
+  close.setAttribute("aria-label", "Закрыть ленту");
+  const toolbar = element("div", "reel-toolbar");
+  toolbar.append(element("span", "reel-label", "Для тебя"), previous, next, close);
+  const state = {container, previous, next, pages: [], seen: new Set([exposure.event.id]),
+    active: null, policy, candidates: events.map(event => event.id)};
+  state.observer = new IntersectionObserver(entries => {
+    const visible = entries.filter(entry => entry.isIntersecting && entry.intersectionRatio >= .65)
+      .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+    if (!visible) return;
+    const view = state.pages.find(view => view.node === visible.target);
+    if (view) void activateReel(state, view);
+  }, {root: container, threshold: [.65, .9]});
+  reels = state;
+  body.replaceChildren(container, toolbar);
   showDialog(details);
-  details.scrollTop = 0;
-  void loadDescription(event, description, version);
-  void loadRelated(event, sheet, version);
+  document.body.classList.add("reels-open");
+  const first = reelPage(state, exposure.event);
+  reelPage(state, null);
+  void activateReel(state, first);
+  container.addEventListener("keydown", event => {
+    if (event.target !== container) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveReel(event.key === "ArrowDown" ? 1 : -1);
+    }
+  });
+  container.focus({preventScroll: true});
 }
 
 function card(exposure, featured) {
@@ -351,8 +486,8 @@ function matchingEvents() {
   );
 }
 
-async function getFeed() {
-  const response = await fetch("/api/feed?session=" + sessionId, { headers });
+async function getFeed(signal) {
+  const response = await fetch("/api/feed?session=" + sessionId, { headers, signal });
   if (!response.ok) {
     throw new Error(response.status === 401 ? "Открой афишу заново в Telegram." : "Не удалось загрузить афишу.");
   }
@@ -470,6 +605,7 @@ about.querySelector("[data-close]").addEventListener("click", () => about.close(
   activeDialog = null;
   if (dialog === details) {
     ++openCardVersion;
+    stopReels();
     stopRelated();
   }
   tg?.BackButton?.hide();
@@ -480,8 +616,14 @@ tg?.BackButton?.onClick(() => activeDialog?.close());
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     stopWatching();
+    if (reels?.active?.exposure) endExposure(reels.active.exposure);
     relatedExposures.forEach(endExposure);
   } else if (details.open) {
+    if (reels?.active?.exposure) {
+      const view = reels.active.exposure;
+      if (view.ended) { view.id = null; view.ended = false; }
+      startExposure(view);
+    }
     relatedExposures.forEach(view => {
       if (view.ended) { view.id = null; view.ended = false; }
       relatedObserver?.unobserve(view.node);
@@ -491,6 +633,7 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", () => {
   stopWatching();
+  stopReels();
   stopRelated();
   void flush();
 });

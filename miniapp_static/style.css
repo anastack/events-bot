@@ -92,3 +92,48 @@ dialog .poster { aspect-ratio: 2; }
 .related-grid .event-info { padding: 10px; }
 .related-grid .heart { color: #fff; }
 .related-grid .heart[aria-pressed="true"] { color: var(--accent); }
+
+.brand { display: flex; align-items: center; }
+.brand img { display: block; width: 104px; height: 68px; object-fit: cover; border-radius: 8px; }
+.top { padding-block: calc(10px + env(safe-area-inset-top)) 10px; }
+.top-label { font-size: .85rem; }
+h1 { font-size: clamp(2.2rem, 7vw, 3.6rem); letter-spacing: -.055em; }
+.poster::before { display: none; }
+.poster { background: #3b2b72; }
+.poster.v1 { background: #442852; }
+.poster.v2 { background: #282b53; }
+.poster.v3 { background: #2e2858; }
+.poster.v4 { background: #3b2c57; }
+.tabs { padding-top: 12px; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+.tabs button { font-size: .8rem; padding-block: 8px; }
+.reels-open { overflow: hidden; }
+#details { width: 100%; height: 100dvh; max-width: 100%; max-height: 100dvh; margin: 0; border: 0; border-radius: 0; overflow: hidden; background: var(--bg); }
+#details-body { height: 100%; max-width: 680px; margin: auto; position: relative; }
+.reels { height: 100%; overflow-y: auto; scroll-snap-type: y mandatory; overscroll-behavior-y: contain; scrollbar-width: none; }
+.reels::-webkit-scrollbar { display: none; }
+.reel { position: relative; height: 100%; min-height: 100%; scroll-snap-align: start; scroll-snap-stop: always; overflow: hidden; display: flex; align-items: flex-end; background: #15121e; }
+.reel .reel-poster { position: absolute; inset: 0; width: 100%; height: 100%; aspect-ratio: auto; padding: 0; }
+.reel-poster img { object-fit: cover; }
+.reel-poster::after { background: linear-gradient(180deg, #0b091c40 0%, #0b091c00 20%, #100f12b8 42%, #100f12f5 72%, #100f12 100%); }
+.reel-poster .poster-word, .reel-poster .date-tile { display: none; }
+.reel-copy { position: relative; width: 100%; max-height: calc(100% - 86px - env(safe-area-inset-top)); overflow-y: auto; padding: 20px 22px calc(28px + env(safe-area-inset-bottom)); gap: 12px; background: transparent; }
+.reel-copy h2 { font-size: clamp(1.45rem, 5vw, 2.1rem); line-height: 1.13; letter-spacing: -.035em; max-width: 96%; }
+.reel-copy .event-meta { font-size: .85rem; color: #d7d1df; }
+.reel-description { font-size: .92rem; line-height: 1.5; color: #d7d1df; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.reel-description.expanded { display: block; max-height: 32dvh; overflow-y: auto; }
+.reel-expand { text-align: left; justify-self: start; color: var(--accent); padding: 4px 0; border: 0; background: none; font-size: .85rem; }
+.reel-expand:disabled { color: var(--muted); }
+.reel-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 5px 0; }
+.reel-actions .cta { font-size: .87rem; padding: 13px 8px; }
+.reel-toolbar { position: absolute; z-index: 3; inset: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: calc(12px + env(safe-area-inset-top)) 16px 18px; background: linear-gradient(#100f12d9, #100f1200); pointer-events: none; }
+.reel-toolbar button { pointer-events: auto; }
+.reel-label { margin-right: auto; font-size: .9rem; font-weight: 650; }
+.reel-nav, .reel-toolbar .reel-close { position: static; float: none; margin: 0; display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid #ffffff29; border-radius: 50%; background: #100f1277; font-size: 1.4rem; color: #fff; }
+.reel-nav:disabled { opacity: .35; }
+.reel-loading { margin: auto; padding: 24px; text-align: center; color: var(--muted); }
+.reel-end { position: absolute; bottom: 20%; left: 50%; transform: translateX(-50%); white-space: nowrap; }
+.reel-copy .related-grid { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; }
+.reel-copy .related-grid .event { flex: 0 0 160px; }
+.reel-copy .related-grid .poster { position: relative; height: 110px; aspect-ratio: auto; }
+.reel-copy .related h3 { font-size: 1rem; }
+@media (prefers-reduced-motion: reduce) { .reels { scroll-behavior: auto; } }

@@ -260,7 +260,7 @@ class Action(BaseModel):
     event_id: int = Field(gt=0)
     kind: Literal["impression", "open", "view_end", "save", "unsave", "outbound_click"]
     occurred_at: datetime
-    surface: Literal["discover", "saved", "related"]
+    surface: Literal["discover", "saved", "related", "reels"]
     position: int = Field(ge=0, lt=FEED_LIMIT)
     dwell_ms: int | None = Field(default=None, ge=0, le=3_600_000)
     candidate_ids: list[int] | None = Field(default=None, max_length=FEED_LIMIT)
